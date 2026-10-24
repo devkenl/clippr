@@ -199,8 +199,8 @@ fun EditorScreen(
                 ) {
                     if (ui.cloudAssetIds.isNotEmpty() && !fullscreen) {
                         CloudMediaBanner(ui.cloudAssetIds.size, ui.importing, ui.importStatus, viewModel::copyCloudMediaToDevice)
-                    } else if (ui.importStatus != null) {
-                        ImportStatusChip(ui.importStatus)
+                    } else {
+                        ui.importStatus?.let { ImportStatusChip(it) }
                     }
                     preview.error?.let { message ->
                         PreviewErrorCard(message, onRetry = viewModel.preview::retry, onDismiss = viewModel.preview::clearError)
