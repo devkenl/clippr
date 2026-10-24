@@ -66,18 +66,28 @@ void main() {
   gl_FragColor = vec4(clamp(c.rgb + (c.rgb - blur) * uAmount * 2.5, 0.0, 1.0), c.a);
 }"""
         StyleEffectType.GLOW -> """
+vec3 bright(vec2 p) {
+  vec3 c = tex(p).rgb;
+  return c * smoothstep(0.55, 0.95, luma(c));
+}
 void main() {
   vec2 uv = vTexSamplingCoord;
   vec4 c = tex(uv);
-  vec3 acc = vec3(0.0);
-  for (int i = 0; i < 12; i++) {
-    float a = float(i) * 0.5236;
-    vec2 d = vec2(cos(a), sin(a)) * uUnit;
-    acc += max(tex(uv + d * 9.0).rgb - 0.55, 0.0);
-    acc += max(tex(uv + d * 20.0).rgb - 0.55, 0.0);
+  // Three rings of 12 taps, rotated against each other, approximate a soft wide blur of the
+  // bright parts without visible copies.
+  vec3 acc = bright(uv) * 2.0;
+  float total = 2.0;
+  for (int r = 1; r <= 3; r++) {
+    float radius = float(r) * 7.0;
+    float w = 1.0 / float(r);
+    for (int i = 0; i < 12; i++) {
+      float a = float(i) * 0.5236 + float(r) * 0.26;
+      acc += bright(uv + vec2(cos(a), sin(a)) * uUnit * radius) * w;
+      total += w;
+    }
   }
-  acc /= 24.0;
-  vec3 col = c.rgb + acc * uAmount * 3.5;
+  vec3 glow = acc / total;
+  vec3 col = c.rgb + glow * uAmount * 2.2;
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
 }"""
         StyleEffectType.LIGHT_LEAK -> """

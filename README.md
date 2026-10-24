@@ -8,18 +8,21 @@ professional non-linear editor.
 
 - 100% free and open source (GPL-3.0-or-later)
 - Works fully offline; no account, no ads, no watermarks, no telemetry
-- Your projects and exports stay on your device; Clippr only reads your original media
+- Your projects and exports stay on your device; Clippr never modifies your original media
+- One optional permission: the microphone, asked for only when you record a voiceover
 
-> **Status: early development (0.1.0).** The editing engine is implemented and unit-tested. The
-> Android app (UI, media pipeline, preview and export) is written but has **not yet been
-> compiled or run on a device** — the first development environment had no Android SDK. Expect
-> compile fixes on the first build. See [docs/FEATURES.md](docs/FEATURES.md) for an honest
-> per-feature status.
+> **Status: early development (0.2.0).** The editing engine is implemented and unit-tested. The
+> app builds in CI and has been used on a Snapdragon tablet. See
+> [docs/FEATURES.md](docs/FEATURES.md) for an honest per-feature status.
 
-## What works in the MVP
+## What works
 
-- Projects: create (aspect ratio, resolution, frame rate), rename, duplicate, delete, autosave
-- Import videos, photos and music; thumbnails, waveforms, missing-file detection and relinking
+- Home: projects, recent exports, device storage, templates, an offline Learn page and Settings
+- Projects: create (aspect ratio, resolution, frame rate) or start from a template, rename,
+  duplicate, delete, autosave
+- Import videos, photos and music; files from cloud apps (Google Drive) are copied to the device;
+  thumbnails, waveforms, missing-file detection and relinking
+- Keyframes, colour grading and LUTs, 14 stylized effects, voiceover recording
 - Timeline: multiple audio tracks, a main video track and a text track; select, move, reorder,
   trim, split, delete, snapping, zoom, pinch, fling, mouse and keyboard support
 - Undo/redo for every edit
@@ -50,7 +53,7 @@ downloadable debug APK in CI.
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
 [Code of Conduct](CODE_OF_CONDUCT.md). The roadmap is in
-[docs/IMPLEMENTATION_PLAN.md](docs/IMPLEMENTATION_PLAN.md).
+[docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## License
 
