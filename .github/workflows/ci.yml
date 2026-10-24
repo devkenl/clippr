@@ -25,10 +25,19 @@ jobs:
 
       - name: Install Android SDK components
         run: |
-          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          # `yes` exits with SIGPIPE once sdkmanager stops reading; that is expected.
-          (yes || true) | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0" "platform-tools"
+          set +e +o pipefail
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          SDKMANAGER=$(ls "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | sort | tail -1)
+          echo "::notice title=sdkmanager::${SDKMANAGER:-not found}; platforms: $(ls "$ANDROID_HOME/platforms" 2>/dev/null | tr '\n' ' ')"
+          # Accepting licences lets the Android Gradle plugin download anything still missing.
+          yes 2>/dev/null | "$SDKMANAGER" --licenses > licences.log 2>&1
+          "$SDKMANAGER" "platforms;android-37" "build-tools;36.0.0" > sdk.log 2>&1
+          status=$?
+          if [ $status -ne 0 ]; then
+            msg=$(tail -25 sdk.log | sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g')
+            echo "::warning title=sdkmanager exited $status (Gradle will try to install instead)::$msg"
+          fi
+          exit 0
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
