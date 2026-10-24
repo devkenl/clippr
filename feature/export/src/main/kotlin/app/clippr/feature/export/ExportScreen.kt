@@ -82,9 +82,11 @@ class ExportViewModel(
     private val projectId: String,
     private val repository: ProjectRepository,
     val coordinator: ExportCoordinator,
+    /** Name of the default [ExportQuality] from Settings. */
+    defaultQuality: String = ExportQuality.STANDARD.name,
 ) : ViewModel() {
 
-    private val _state = MutableStateFlow(ExportUiState())
+    private val _state = MutableStateFlow(ExportUiState(quality = ExportQuality.entries.firstOrNull { it.name == defaultQuality } ?: ExportQuality.STANDARD))
     val state: StateFlow<ExportUiState> = _state.asStateFlow()
 
     init {

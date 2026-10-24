@@ -28,6 +28,9 @@ kotlin {
 dependencies {
     implementation(project(":core:ui"))
     implementation(project(":core:database"))
+    implementation(project(":core:media"))
+    implementation(project(":core:render"))
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.kotlinx.coroutines.android)

@@ -17,6 +17,7 @@ import app.clippr.core.render.ExportEngine
 import app.clippr.core.render.RenderResources
 import app.clippr.feature.editor.EditorDependencies
 import app.clippr.feature.export.ExportCoordinator
+import app.clippr.feature.home.HomeDependencies
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -53,6 +54,9 @@ class AppContainer(app: Application) {
             importer = importer,
             settings = settings,
         )
+    }
+    val homeDependencies: HomeDependencies by lazy {
+        HomeDependencies(app, repository, exports, settings, importer, videoLibrary, thumbnails)
     }
     val exportCoordinator: ExportCoordinator by lazy {
         ExportCoordinator(app, ExportEngine(app), videoLibrary, appScope) { video ->

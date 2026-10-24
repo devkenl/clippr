@@ -1,7 +1,9 @@
 package app.clippr.feature.home
 
-import android.graphics.BitmapFactory
-import androidx.compose.foundation.Image
+import android.net.Uri
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -9,127 +11,193 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.GridItemSpan
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.clippr.core.database.ProjectSummary
+import app.clippr.core.database.SettingsValues
 import app.clippr.core.model.AspectRatioPreset
+import app.clippr.core.model.ProjectSettings
+import app.clippr.core.model.ProjectTemplate
 import app.clippr.core.model.time.FrameRate
-import app.clippr.core.model.time.Timecode
 import app.clippr.core.ui.components.ClipprLogo
-import app.clippr.core.ui.components.EmptyState
+import app.clippr.core.ui.components.PillTabs
 import app.clippr.core.ui.components.PrimaryButton
 import app.clippr.core.ui.components.SegmentedChoice
 import app.clippr.core.ui.components.ToolButton
 import app.clippr.core.ui.icons.ClipprIcons
 import app.clippr.core.ui.theme.Spacing
 import app.clippr.core.ui.theme.palette
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
+
+/** Home's top-level pages, shown as tabs across the top. */
+enum class HomePage(val label: String) {
+    HOME("Home"),
+    PROJECTS("Projects"),
+    MEDIA("Media"),
+    TEMPLATES("Templates"),
+    LEARN("Learn"),
+    SETTINGS("Settings"),
+}
+
+private val ImportMimeTypes = arrayOf("video/*", "image/*", "audio/*")
 
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onOpenProject: (String) -> Unit) {
+fun HomeScreen(viewModel: HomeViewModel, versionName: String, onOpenProject: (String) -> Unit) {
     val c = palette
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
+    var pageName by rememberSaveable { mutableStateOf(HomePage.HOME.name) }
+    val page = HomePage.valueOf(pageName)
+    var query by rememberSaveable { mutableStateOf("") }
     var creating by rememberSaveable { mutableStateOf(false) }
+    var showExports by rememberSaveable { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<ProjectSummary?>(null) }
     var deleting by remember { mutableStateOf<ProjectSummary?>(null) }
 
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris: List<Uri> ->
+        viewModel.importToNewProject(uris, onOpenProject)
+    }
+    val useTemplate: (ProjectTemplate) -> Unit = { t -> viewModel.createFromTemplate(t, onOpenProject) }
+
+    BackHandler(enabled = page != HomePage.HOME || query.isNotEmpty()) {
+        if (query.isNotEmpty()) query = "" else pageName = HomePage.HOME.name
+    }
+    LaunchedEffect(state.message) {
+        state.message?.let {
+            snackbar.showSnackbar(it)
+            viewModel.messageShown()
+        }
+    }
+    // Storage and export availability can change while Clippr is in the background.
+    LifecycleResumeEffect(Unit) {
+        viewModel.refreshStorage()
+        onPauseOrDispose { }
+    }
+
+    val actions = HomeActions(
+        newProject = { creating = true },
+        importMedia = { importLauncher.launch(ImportMimeTypes) },
+        templates = { pageName = HomePage.TEMPLATES.name },
+        allProjects = { pageName = HomePage.PROJECTS.name },
+        manageStorage = { pageName = HomePage.SETTINGS.name },
+        openProject = onOpenProject,
+        rename = { renaming = it },
+        duplicate = viewModel::duplicate,
+        delete = { deleting = it },
+        playExport = { e -> runCatching { context.startActivity(viewModel.videoLibrary.viewIntent(Uri.parse(e.uri))) } },
+        shareExport = { e -> runCatching { context.startActivity(viewModel.videoLibrary.shareIntent(Uri.parse(e.uri), "Share ${e.projectName}")) } },
+        removeExport = { e -> viewModel.removeExport(e.id) },
+        allExports = { showExports = true },
+    )
+
     BoxWithConstraints(Modifier.fillMaxSize().background(c.background).systemBarsPadding()) {
-        val wide = maxWidth >= 720.dp
-        val gutter = if (wide) 40.dp else 20.dp
-        LazyVerticalGrid(
-            columns = GridCells.Adaptive(if (wide) 260.dp else 160.dp),
-            contentPadding = PaddingValues(start = gutter, end = gutter, bottom = 48.dp),
-            horizontalArrangement = Arrangement.spacedBy(if (wide) 20.dp else 12.dp),
-            verticalArrangement = Arrangement.spacedBy(if (wide) 24.dp else 16.dp),
-            modifier = Modifier.fillMaxSize(),
-        ) {
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Header(wide, onNew = { creating = true })
-            }
-            when (val s = state) {
-                HomeState.Loading -> Unit
-                is HomeState.Ready -> {
-                    if (s.projects.isEmpty()) {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            EmptyState(
-                                icon = ClipprIcons.Film,
-                                title = "Start your first edit",
-                                body = "Create a project, import clips and music, cut them on the timeline and export an MP4. Everything stays on this device.",
-                                modifier = Modifier.fillMaxWidth().padding(top = 48.dp),
-                                action = { PrimaryButton("New project", { creating = true }, icon = ClipprIcons.Plus) },
-                            )
-                        }
-                    } else {
-                        item(span = { GridItemSpan(maxLineSpan) }) {
-                            Text("Recent projects", style = MaterialTheme.typography.titleSmall, color = c.textSecondary)
-                        }
-                        items(s.projects, key = { it.id }) { p ->
-                            ProjectCard(
-                                project = p,
-                                onOpen = { onOpenProject(p.id) },
-                                onRename = { renaming = p },
-                                onDuplicate = { viewModel.duplicate(p.id) },
-                                onDelete = { deleting = p },
-                            )
-                        }
+        val wide = maxWidth >= 900.dp
+        val medium = maxWidth >= 600.dp
+        val gutter = if (medium) 32.dp else 16.dp
+        val columns = when {
+            maxWidth >= 1200.dp -> 3
+            medium -> if (wide) 3 else 2
+            else -> 2
+        }
+        Column(Modifier.fillMaxSize()) {
+            TopNavigation(page, { pageName = it.name; query = "" }, query, { query = it }, wide = medium, gutter = gutter)
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = gutter)
+                    .padding(top = Spacing.md, bottom = 40.dp),
+            ) {
+                if (query.isNotBlank() && page != HomePage.PROJECTS && page != HomePage.MEDIA && page != HomePage.TEMPLATES) {
+                    SearchResults(query, state.projects, columns, actions, useTemplate)
+                } else {
+                    when (page) {
+                        HomePage.HOME -> HomeTab(state, wide, actions, versionName)
+                        HomePage.PROJECTS -> ProjectsTab(state, columns, query, actions)
+                        HomePage.MEDIA -> MediaTab(state, columns, query, viewModel.thumbnails, viewModel::loadLibrary, actions.importMedia, onOpenProject)
+                        HomePage.TEMPLATES -> TemplatesTab(columns, query, busy = state.busy != null, onUse = useTemplate)
+                        HomePage.LEARN -> LearnTab(wide)
+                        HomePage.SETTINGS -> SettingsTab(
+                            state,
+                            wide,
+                            versionName,
+                            SettingsActions(
+                                update = viewModel::updateSettings,
+                                clearCache = viewModel::clearCache,
+                                findUnused = viewModel::findUnusedMedia,
+                                removeUnused = viewModel::removeUnusedMedia,
+                                refreshStorage = viewModel::refreshStorage,
+                            ),
+                        )
                     }
                 }
             }
         }
+        state.busy?.let { BusyOverlay(it) }
+        SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp))
     }
 
     if (creating) {
         NewProjectSheet(
+            defaults = state.settings,
             onDismiss = { creating = false },
-            onCreate = { name, preset, side, fps ->
+            onCreate = { name, settings ->
                 creating = false
-                viewModel.create(name, preset, side, fps, onOpenProject)
+                viewModel.create(name, settings, onOpenProject)
             },
         )
+    }
+    if (showExports) {
+        ModalBottomSheet(onDismissRequest = { showExports = false }, containerColor = c.background) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = Spacing.lg).padding(bottom = Spacing.xl).verticalScroll(rememberScrollState())) {
+                Text("All exports", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+                Spacer(Modifier.height(Spacing.md))
+                RecentExportsCard(state, actions, limit = Int.MAX_VALUE, showHeader = false)
+            }
+        }
     }
     renaming?.let { p ->
         RenameDialog(p.name, onDismiss = { renaming = null }) { name ->
@@ -141,7 +209,7 @@ fun HomeScreen(viewModel: HomeViewModel, onOpenProject: (String) -> Unit) {
         AlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("Delete “${p.name}”?") },
-            text = { Text("The project and its edits are removed from Clippr. Your original media files are not touched.") },
+            text = { Text("The project and its edits are removed from Clippr. Your original media files and exported videos are not touched.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.delete(p.id)
@@ -155,110 +223,100 @@ fun HomeScreen(viewModel: HomeViewModel, onOpenProject: (String) -> Unit) {
 }
 
 @Composable
-private fun Header(wide: Boolean, onNew: () -> Unit) {
-    val c = palette
-    Column(Modifier.fillMaxWidth().padding(top = if (wide) 40.dp else 20.dp, bottom = Spacing.sm)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            ClipprLogo(size = if (wide) 40.dp else 32.dp)
-            Spacer(Modifier.width(Spacing.md))
-            Column(Modifier.weight(1f)) {
-                Text("Clippr", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
-                Text("Create freely. Edit professionally.", style = MaterialTheme.typography.bodyMedium, color = c.textSecondary)
-            }
-            if (wide) PrimaryButton("New project", onNew, icon = ClipprIcons.Plus)
-        }
-        if (!wide) {
-            Spacer(Modifier.height(Spacing.lg))
-            PrimaryButton("New project", onNew, icon = ClipprIcons.Plus, modifier = Modifier.fillMaxWidth())
-        }
-    }
-}
-
-@Composable
-private fun ProjectCard(
-    project: ProjectSummary,
-    onOpen: () -> Unit,
-    onRename: () -> Unit,
-    onDuplicate: () -> Unit,
-    onDelete: () -> Unit,
+private fun TopNavigation(
+    page: HomePage,
+    onPage: (HomePage) -> Unit,
+    query: String,
+    onQuery: (String) -> Unit,
+    wide: Boolean,
+    gutter: androidx.compose.ui.unit.Dp,
 ) {
     val c = palette
-    var menu by remember { mutableStateOf(false) }
-    val thumbnail by produceState<ImageBitmap?>(null, project.thumbnailPath, project.modifiedAtMs) {
-        val path = project.thumbnailPath
-        value = if (path == null) {
-            null
-        } else {
-            withContext(Dispatchers.IO) {
-                runCatching { if (File(path).exists()) BitmapFactory.decodeFile(path)?.asImageBitmap() else null }.getOrNull()
-            }
-        }
-    }
-    Column(
-        Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .clickable(role = Role.Button, onClickLabel = "Open ${project.name}", onClick = onOpen),
-    ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .aspectRatio(16f / 10f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(c.surface)
-                .border(1.dp, c.hairline, RoundedCornerShape(16.dp)),
-            contentAlignment = Alignment.Center,
+    val icons = listOf(ClipprIcons.Home, ClipprIcons.Folder, ClipprIcons.Photo, ClipprIcons.Grid, ClipprIcons.Learn, ClipprIcons.Settings)
+    if (wide) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = gutter, vertical = Spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            val img = thumbnail
-            if (img != null) {
-                Image(img, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-            } else {
-                AspectGlyph(project.width.toFloat() / project.height.coerceAtLeast(1))
+            Brand()
+            Spacer(Modifier.width(Spacing.xl))
+            Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+                PillTabs(HomePage.entries.map { it.label }, page.ordinal, { onPage(HomePage.entries[it]) }, icons = icons)
             }
-            Box(
-                Modifier.align(Alignment.BottomStart).padding(8.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(c.background.copy(alpha = 0.75f))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                Text(Timecode.formatDuration(project.durationUs), style = MaterialTheme.typography.labelSmall, color = c.textPrimary)
-            }
+            Spacer(Modifier.width(Spacing.lg))
+            SearchField(query, onQuery, Modifier.width(280.dp))
         }
-        Row(Modifier.fillMaxWidth().padding(top = 8.dp, start = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(project.name, style = MaterialTheme.typography.titleSmall, color = c.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    "${project.width}×${project.height} · ${project.clipCount} clips · ${relativeTime(project.modifiedAtMs)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = c.textTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+    } else {
+        Column(Modifier.fillMaxWidth().padding(horizontal = gutter).padding(top = Spacing.md)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Brand()
+                Spacer(Modifier.width(Spacing.md))
+                SearchField(query, onQuery, Modifier.weight(1f))
             }
-            Box {
-                ToolButton(ClipprIcons.More, "More actions for ${project.name}", { menu = true }, size = 40.dp)
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    DropdownMenuItem(text = { Text("Rename") }, leadingIcon = { Icon(ClipprIcons.Edit, null) }, onClick = { menu = false; onRename() })
-                    DropdownMenuItem(text = { Text("Duplicate") }, leadingIcon = { Icon(ClipprIcons.Copy, null) }, onClick = { menu = false; onDuplicate() })
-                    DropdownMenuItem(
-                        text = { Text("Delete", color = c.danger) },
-                        leadingIcon = { Icon(ClipprIcons.Trash, null, tint = c.danger) },
-                        onClick = { menu = false; onDelete() },
-                    )
-                }
-            }
+            Spacer(Modifier.height(Spacing.md))
+            PillTabs(HomePage.entries.map { it.label }, page.ordinal, { onPage(HomePage.entries[it]) }, compact = true)
         }
     }
 }
 
-/** Outline of the project's frame shape, used when no thumbnail exists yet. */
 @Composable
-private fun AspectGlyph(aspect: Float) {
+private fun Brand() {
     val c = palette
-    val maxW = 64.dp
-    val maxH = 44.dp
-    val (w, h) = if (aspect >= maxW / maxH) maxW to maxW / aspect else maxH * aspect to maxH
-    Box(Modifier.size(w, h).border(1.5.dp, c.outline, RoundedCornerShape(6.dp)), contentAlignment = Alignment.Center) {
-        Icon(ClipprIcons.Film, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        ClipprLogo(size = 32.dp)
+        Spacer(Modifier.width(10.dp))
+        Text("Clippr", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
+    }
+}
+
+@Composable
+private fun SearchField(query: String, onQuery: (String) -> Unit, modifier: Modifier) {
+    val c = palette
+    Row(
+        modifier
+            .heightIn(min = 44.dp)
+            .clip(RoundedCornerShape(50))
+            .background(c.surface)
+            .border(1.dp, c.hairline, RoundedCornerShape(50))
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(ClipprIcons.Search, contentDescription = null, tint = c.textTertiary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f)) {
+            if (query.isEmpty()) Text("Search projects and templates", style = MaterialTheme.typography.bodyMedium, color = c.textTertiary, maxLines = 1)
+            BasicTextField(
+                value = query,
+                onValueChange = onQuery,
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = c.textPrimary),
+                cursorBrush = SolidColor(c.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (query.isNotEmpty()) ToolButton(ClipprIcons.Close, "Clear search", { onQuery("") }, size = 32.dp)
+    }
+}
+
+@Composable
+private fun BusyOverlay(text: String) {
+    val c = palette
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(c.background.copy(alpha = 0.7f))
+            .clickable(enabled = true, role = Role.Image, onClick = {}),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            Modifier.widthIn(max = 360.dp).clip(RoundedCornerShape(18.dp)).background(c.surface).padding(Spacing.xl),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            CircularProgressIndicator(color = c.accent)
+            Spacer(Modifier.height(Spacing.lg))
+            Text(text, style = MaterialTheme.typography.bodyMedium, color = c.textPrimary)
+        }
     }
 }
 
@@ -266,16 +324,20 @@ private val Resolutions = listOf(720, 1080, 2160)
 
 @Composable
 private fun NewProjectSheet(
+    defaults: SettingsValues,
     onDismiss: () -> Unit,
-    onCreate: (String, AspectRatioPreset, Int, FrameRate) -> Unit,
+    onCreate: (String, ProjectSettings) -> Unit,
 ) {
     val c = palette
     var name by rememberSaveable { mutableStateOf("") }
-    var preset by rememberSaveable { mutableStateOf(AspectRatioPreset.LANDSCAPE_16_9) }
-    var side by rememberSaveable { mutableStateOf(1080) }
-    var fpsIndex by rememberSaveable { mutableStateOf(FrameRate.COMMON.indexOf(FrameRate.FPS_30)) }
+    var preset by rememberSaveable { mutableStateOf(defaults.defaultAspect) }
+    var side by rememberSaveable { mutableStateOf(if (defaults.defaultShortSide in Resolutions) defaults.defaultShortSide else 1080) }
+    var fpsIndex by rememberSaveable { mutableStateOf(FrameRate.COMMON.indexOf(defaults.defaultFrameRate).coerceAtLeast(0)) }
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true), containerColor = c.surface) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = Spacing.xl).padding(bottom = Spacing.xl), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = Spacing.xl).padding(bottom = Spacing.xl).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md),
+        ) {
             Text("New project", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
             OutlinedTextField(
                 value = name,
@@ -307,7 +369,7 @@ private fun NewProjectSheet(
             Spacer(Modifier.height(Spacing.xs))
             PrimaryButton(
                 "Create project",
-                onClick = { onCreate(name, preset, side, FrameRate.COMMON[fpsIndex]) },
+                onClick = { onCreate(name, ProjectSettings.create(preset, side, FrameRate.COMMON[fpsIndex])) },
                 icon = ClipprIcons.Check,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -357,16 +419,4 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (Str
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
         containerColor = c.panel,
     )
-}
-
-private fun relativeTime(ms: Long): String {
-    val diff = (System.currentTimeMillis() - ms).coerceAtLeast(0)
-    val minutes = diff / 60_000
-    return when {
-        minutes < 1 -> "just now"
-        minutes < 60 -> "${minutes}m ago"
-        minutes < 60 * 24 -> "${minutes / 60}h ago"
-        minutes < 60 * 24 * 30 -> "${minutes / (60 * 24)}d ago"
-        else -> java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(ms))
-    }
 }

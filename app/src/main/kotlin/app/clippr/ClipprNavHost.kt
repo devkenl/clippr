@@ -88,8 +88,8 @@ fun ClipprNavHost(container: AppContainer) {
         CompositionLocalProvider(LocalViewModelStoreOwner provides owner) {
             when {
                 current == Routes.HOME -> {
-                    val vm: HomeViewModel = viewModel(factory = viewModelFactory { initializer { HomeViewModel(container.repository) } })
-                    HomeScreen(vm, onOpenProject = { push(Routes.editor(it)) })
+                    val vm: HomeViewModel = viewModel(factory = viewModelFactory { initializer { HomeViewModel(container.homeDependencies) } })
+                    HomeScreen(vm, versionName = BuildConfig.VERSION_NAME, onOpenProject = { push(Routes.editor(it)) })
                 }
                 current.startsWith("editor/") -> {
                     val id = current.removePrefix("editor/")
@@ -101,7 +101,7 @@ fun ClipprNavHost(container: AppContainer) {
                 current.startsWith("export/") -> {
                     val id = current.removePrefix("export/")
                     val vm: ExportViewModel = viewModel(
-                        factory = viewModelFactory { initializer { ExportViewModel(id, container.repository, container.exportCoordinator) } },
+                        factory = viewModelFactory { initializer { ExportViewModel(id, container.repository, container.exportCoordinator, container.settings.current.exportQuality) } },
                     )
                     ExportScreen(vm, container.videoLibrary, onBack = ::pop)
                 }
