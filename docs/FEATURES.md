@@ -30,6 +30,9 @@ An honest checklist. Status legend:
 | Project repair on open (NaN / out-of-range values, unsorted keyframes); damaged clips left out and reported | ✅ |
 | Stylized effects and flips in the model and project format | ✅ |
 | Templates (6 formats, 8 starter projects) produce valid projects | ✅ |
+| Overlap rules for transitions (≤ half of either clip, no triple overlaps) in move, trim, split, delete, speed | ✅ |
+| Transition maths (dissolve, dip, push, slide, wipe, circle, zoom) identical whichever clip is on top | ✅ |
+| Render planner: one layer per visible video track, A/B lanes for transitions, audio crossfades | ✅ |
 
 ## Application (Android)
 
@@ -44,6 +47,9 @@ An honest checklist. Status legend:
 | Voiceover recording (microphone permission on first use) | 🟡 |
 | 14 GPU effects (Sharpen, Glow, Light leak, Zoom blur, Chromatic, Fisheye, Mirror, Pixelate, Posterize, Sketch, VHS, Old film, Glitch, Shake), flip | 🟡 |
 | Inspector tabs with collapsible sections | 🟡 |
+| Transitions: drag a clip over its neighbour, crossfade marks on the timeline, Transition tab (17 types, easing, length) | 🟡 |
+| Video layers: add video tracks, hide layers, add as overlay, picture-in-picture and split-screen layouts | 🟡 |
+| Chroma key (green/blue) | 🟡 |
 | Export history and stall detection | 🟡 |
 | Room persistence, autosave, save indicator, save on background/close | 🟡 |
 | Media import via Storage Access Framework (video, photo, audio), persisted read access | 🟡 |
@@ -72,11 +78,9 @@ An honest checklist. Status legend:
 
 | Feature | Status |
 |---|---|
-| Multiple overlapping video layers, picture-in-picture | ⬜ (one composited video track in the MVP) |
-| Cross-dissolve transitions (dip to black is possible with clip fades) | ⬜ |
 | Per-property keyframe curves, speed ramps | ⬜ |
 | Colour wheels, curves, scopes (waveform/vectorscope/histogram) | ⬜ |
-| Chroma key, masks, blend modes | ⬜ |
+| Masks, blend modes (Media3's compositor only does normal alpha blending) | ⬜ |
 | Audio EQ, panning, noise reduction, peak meters | ⬜ |
 | Markers, nested sequences, compound clips, adjustment layers | ⬜ |
 | Drag and drop from media panel to timeline (tap adds at the playhead instead) | ⬜ |

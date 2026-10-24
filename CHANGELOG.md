@@ -6,6 +6,27 @@ versioning.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-25
+
+### Added
+- **Transitions, Vegas Pro style**: drag a clip over the end of the previous clip on a video
+  track and the overlap becomes a transition (up to half of either clip). The timeline marks it
+  with crossing fade curves; tap it to edit. 17 transitions: cross dissolve, dip to black, push
+  and slide (4 directions each), wipe (4 directions), circle, zoom in and zoom out, with smooth,
+  linear, ease-in or ease-out motion. Sound crossfades along with the picture. "Add transition"
+  from a clip's long-press menu or the new Transition tab.
+- **Video layers**: add video tracks (new ones go on top), hide a layer with the eye button,
+  add photos or videos as overlays straight from the media panel (picture-in-picture button).
+  Clips on upper layers keep all transform, keyframe and effect controls.
+- Layout presets for overlays: picture-in-picture in each corner, split screen left/right.
+- Chroma key (green or blue screen) with strength, edge softness and spill removal.
+- New logo: mark and "clippr." wordmark on Home, in the editor and as the launcher icon.
+- "Add track" menu (video layer, audio or text track).
+
+### Changed
+- Opacity, fades and transitions on layered timelines are real transparency, composited by
+  Media3; single-layer projects render exactly as before.
+
 ## [0.2.0] — 2026-10-25
 
 ### Added

@@ -38,7 +38,7 @@ rates. The editor snaps the playhead and split points to frame starts.
 |---|---|---|
 | Project | `Project` | Settings, assets, sequence, timestamps |
 | Sequence | `TimelineSequence` | Renamed to avoid clashing with `kotlin.sequences.Sequence` |
-| Track | `Track` | Kind (video/audio/text), mute, lock; clips sorted and non-overlapping |
+| Track | `Track` | Kind (video/audio/text), mute, lock, hidden (video); clips sorted. Only video tracks allow overlaps, and an overlap is a transition (`Overlaps`: at most half of either clip, never three clips at once) |
 | Clip | `Clip` | Places a source range at a timeline position, with speed, transform, audio, text |
 | MediaAsset | `MediaAsset` | Reference to the user's file (SAF URI); never copied or modified |
 | RenderSettings | `ProjectSettings`, `ExportSettings` | Canvas/frame rate; export resolution/quality |
@@ -89,12 +89,21 @@ Project ──RenderPlanner──▶ RenderPlan ──CompositionFactory──�
 duration, muting, missing media (rendered as gaps so nothing shifts), fade clamping and text
 visibility windows. `CompositionFactory` then maps the plan one-to-one onto Media3:
 
-- Sequence 0: the main video track as an audio+video `EditedMediaItemSequence`, with
-  `addGap()` for gaps. Items without audio produce silence.
-- One audio-only sequence per unmuted audio track.
-- Per visual clip: `Crop` → `Presentation` (fit or fill into the canvas) → canvas matrix
-  (`FrameGeometry.ndcMatrix`: scale, aspect-corrected clockwise rotation, translation) →
-  opacity (`RgbAdjustment`, exact over black because the MVP has one video layer).
+- One audio+video `EditedMediaItemSequence` per video **layer**, top layer first (Media3 draws
+  its first input on top), with `addGap()` for gaps. Every visible video track is a layer; a
+  track with transitions becomes two layers whose clips alternate (A/B roll), so the outgoing
+  and incoming clip of a transition play at the same time. Items without audio produce silence.
+- One audio-only sequence per unmuted audio track (and per lane of a hidden video track).
+- Per visual clip: `Crop` → `Presentation` (fit or fill into the canvas) → chroma key → blur →
+  colour LUT → stylized shaders → canvas matrix (`FrameGeometry.ndcMatrix`: flip, scale,
+  aspect-corrected clockwise rotation, translation) → shake → vignette/grain → opacity.
+- Opacity with **one layer**: an RGB scale (exact over black). With **several layers** the
+  composition uses `MultipleInputVideoGraph` (preview) / Transformer's multi-input path (export)
+  and `LayerCompositor` (`VideoCompositorSettings`) sets every layer's alpha, move and zoom per
+  frame from `VideoSegment.Media.lookAt` (keyframed opacity × fades × transition). Gaps are
+  fully transparent. Wipes add a mask shader at the end of the clip's chain.
+- Transition looks live in `TransitionMath` (pure Kotlin, tested): each is defined for both
+  stacking orders so the picture is the same whichever lane is on top.
 - Per clip audio: `GainProcessor` driven by the model's `AudioEnvelope` (volume + linear fades).
 - Composition effects: a `Presentation` that pins the output size (Media3 generates gaps as
   16×16 blank frames) and an `OverlayEffect` with one `BitmapOverlay` per text clip. Composition
@@ -106,9 +115,12 @@ Text bitmaps are rendered at the output resolution by the same `TextRenderer`.
 
 ### Known Media3 constraints (isolated in `core:render`)
 
-- `CompositionPlayer` is `@ExperimentalApi`. Multi-asset video layouts are not supported by its
-  default video graph; hence a single composited video track in the MVP.
-- Video crossfades between sequences are not supported yet; transitions are a later milestone.
+- `CompositionPlayer` is `@ExperimentalApi`; layered previews need `MultipleInputVideoGraph`,
+  so the preview player is rebuilt when a project switches between one and several layers.
+- The default compositor only does normal alpha blending (no blend modes) and takes output
+  timestamps from the top layer.
+- Every visible layer decodes at the same time: several 4K layers can exceed a device's decoders
+  in the preview; export is unaffected but slower.
 
 ## Synchronization, frame rates and VFR
 
