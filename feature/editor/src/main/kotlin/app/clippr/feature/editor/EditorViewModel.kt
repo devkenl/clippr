@@ -7,11 +7,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import app.clippr.core.database.LoadResult
 import app.clippr.core.database.ProjectRepository
+import app.clippr.core.media.FrameGrabber
 import app.clippr.core.media.MediaAccess
 import app.clippr.core.media.MediaProbe
 import app.clippr.core.media.ProbeResult
 import app.clippr.core.media.ThumbnailRepository
 import app.clippr.core.media.WaveformRepository
+import app.clippr.core.model.Animation
 import app.clippr.core.model.Clip
 import app.clippr.core.model.MediaAsset
 import app.clippr.core.model.MediaType
@@ -20,6 +22,8 @@ import app.clippr.core.model.ProjectIntegrity
 import app.clippr.core.model.ProjectSettings
 import app.clippr.core.model.TextStyle
 import app.clippr.core.model.TrackKind
+import app.clippr.core.model.Transform
+import app.clippr.core.model.time.US_PER_SECOND
 import app.clippr.core.model.edit.AddAssetClip
 import app.clippr.core.model.edit.AddTextClip
 import app.clippr.core.model.edit.AddTrack
@@ -27,6 +31,7 @@ import app.clippr.core.model.edit.ChangeProjectSettings
 import app.clippr.core.model.edit.CompositeCommand
 import app.clippr.core.model.edit.DEFAULT_STILL_DURATION_US
 import app.clippr.core.model.edit.DeleteClips
+import app.clippr.core.model.edit.DuplicateClip
 import app.clippr.core.model.edit.EditCommand
 import app.clippr.core.model.edit.EditHistory
 import app.clippr.core.model.edit.ImportAssets
@@ -37,7 +42,10 @@ import app.clippr.core.model.edit.SetTrackLocked
 import app.clippr.core.model.edit.SetTrackMuted
 import app.clippr.core.model.edit.SplitClip
 import app.clippr.core.model.edit.UpdateClip
+import app.clippr.core.render.FontLibrary
+import app.clippr.core.render.ImportOutcome
 import app.clippr.core.render.PreviewEngine
+import app.clippr.core.render.RenderResources
 import app.clippr.core.render.PreviewQuality
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -63,6 +71,8 @@ class EditorDependencies(
     val waveforms: WaveformRepository,
     /** Outlives screens, so the final save still completes when the editor closes. */
     val appScope: CoroutineScope,
+    val resources: RenderResources,
+    val frameGrabber: FrameGrabber,
 )
 
 enum class SaveStatus { SAVED, UNSAVED, SAVING, FAILED }
@@ -84,6 +94,8 @@ data class EditorUiState(
     val message: String? = null,
     /** Asset ids imported in this session, highlighted in the media panel. */
     val recentAssetIds: Set<String> = emptySet(),
+    val fonts: List<FontLibrary.FontInfo> = emptyList(),
+    val luts: List<String> = emptyList(),
 ) {
     val selectedClip: Clip? get() = selectedClipIds.singleOrNull()?.let { project?.sequence?.clip(it) }
 }
@@ -107,8 +119,16 @@ class EditorViewModel(
     private val _state = MutableStateFlow(EditorUiState())
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
 
+    val resources: RenderResources get() = deps.resources
+
     init {
         viewModelScope.launch { load() }
+        viewModelScope.launch {
+            deps.resources.fonts.version.collect { _state.update { it.copy(fonts = deps.resources.fonts.fonts()) } }
+        }
+        viewModelScope.launch {
+            deps.resources.luts.version.collect { _state.update { it.copy(luts = deps.resources.luts.list()) } }
+        }
     }
 
     private suspend fun load() {
@@ -154,6 +174,22 @@ class EditorViewModel(
         liveProject = command.apply(h.current)
         publish(previewNow = false)
     }
+
+    /**
+     * Previews new placement values for [clipId] from on-canvas gestures. With keyframes, the
+     * keyframe at the playhead is updated (or created) instead of the static transform.
+     */
+    fun liveTransform(clipId: String, t: Transform) {
+        val clip = history?.current?.sequence?.clip(clipId) ?: return
+        val src = clip.sourceTimeAt(preview.state.value.positionUs.coerceIn(clip.timelineStartUs, clip.timelineEndUs - 1))
+        liveUpdate(clipId, "Transform") { current ->
+            Animation.editTransformAt(current, src, keyframeTolerance()) { base ->
+                base.copy(positionX = t.positionX, positionY = t.positionY, scale = t.scale, rotationDegrees = t.rotationDegrees, opacity = t.opacity)
+            }
+        }
+    }
+
+    private fun keyframeTolerance(): Long = (history?.current?.settings?.frameRate?.frameDurationUs ?: 33_334L) / 2 + 1
 
     /** Records the pending live change, if any, as a single undo step. */
     fun commitLive() {
@@ -236,6 +272,97 @@ class EditorViewModel(
         }
         val ok = execute(CompositeCommand("Split clip", targets.map { SplitClip(it.id, t, newId("clip")) }))
         if (!ok) showMessage("Can't split this close to the edge of a clip.")
+    }
+
+    fun splitClip(clipId: String) {
+        val project = history?.current ?: return
+        val clip = project.sequence.clip(clipId) ?: return
+        val t = currentFrame()
+        if (!clip.contains(t)) {
+            showMessage("Move the playhead over the clip to split it there.")
+            return
+        }
+        if (!execute(SplitClip(clipId, t, newId("clip")))) showMessage("Can't split this close to the edge of a clip.")
+    }
+
+    fun deleteClip(clipId: String, ripple: Boolean) {
+        if (execute(DeleteClips(setOf(clipId), ripple))) {
+            _state.update { it.copy(selectedClipIds = it.selectedClipIds - clipId) }
+        }
+    }
+
+    fun duplicateClip(clipId: String) {
+        val newClipId = newId("clip")
+        if (execute(DuplicateClip(clipId, newClipId))) {
+            _state.update { it.copy(selectedClipIds = setOf(newClipId)) }
+        } else {
+            showMessage("This clip can't be duplicated (is its track locked?).")
+        }
+    }
+
+    /**
+     * Freeze frame: grabs the frame under the playhead, splits the clip there and inserts a
+     * 2-second still of that frame between the two halves.
+     */
+    fun freezeFrame(clipId: String? = null) {
+        val project = history?.current ?: return
+        val t = currentFrame()
+        val clip = (clipId?.let { project.sequence.clip(it) } ?: project.sequence.mainVideoTrack?.clipAt(t))
+        val track = clip?.let { project.sequence.trackOfClip(it.id) }
+        val asset = project.asset(clip?.assetId)
+        if (clip == null || track == null || asset == null || asset.type != MediaType.VIDEO || !clip.contains(t)) {
+            showMessage("Put the playhead over a video clip to freeze a frame.")
+            return
+        }
+        if (track.locked) {
+            showMessage("Unlock the track to add a freeze frame.")
+            return
+        }
+        viewModelScope.launch {
+            val still = deps.frameGrabber.grab(asset, clip.sourceTimeAt(t), maxOf(project.settings.width, project.settings.height))
+            if (still == null) {
+                showMessage("Couldn't read that frame.")
+                return@launch
+            }
+            val stillClipId = newId("clip")
+            val commands = buildList<EditCommand> {
+                add(ImportAssets(listOf(still)))
+                if (t - clip.timelineStartUs > 100_000 && clip.timelineEndUs - t > 100_000) add(SplitClip(clip.id, t, newId("clip")))
+                add(AddAssetClip(still.id, stillClipId, track.id, startUs = t, stillDurationUs = 2 * US_PER_SECOND))
+                add(UpdateClip(stillClipId, "Freeze frame") { it.copy(transform = clip.transform, color = clip.color, effects = clip.effects.copy(fadeInUs = 0, fadeOutUs = 0)) })
+            }
+            if (execute(CompositeCommand("Freeze frame", commands))) {
+                _state.update { it.copy(selectedClipIds = setOf(stillClipId)) }
+            }
+        }
+    }
+
+    fun importFont(uri: Uri, applyToClipId: String?) {
+        viewModelScope.launch {
+            when (val r = deps.resources.fonts.import(uri)) {
+                is ImportOutcome.Imported -> {
+                    showMessage("Added font “${r.name}”.")
+                    if (applyToClipId != null) {
+                        execute(UpdateClip(applyToClipId, "Change font") { it.copy(text = it.text?.copy(fontId = r.id)) })
+                    }
+                }
+                is ImportOutcome.Failed -> showMessage("Couldn't import the font: ${r.reason}")
+            }
+        }
+    }
+
+    fun importLut(uri: Uri, applyToClipId: String?) {
+        viewModelScope.launch {
+            when (val r = deps.resources.luts.import(uri)) {
+                is ImportOutcome.Imported -> {
+                    showMessage("Added LUT “${r.name}”.")
+                    if (applyToClipId != null) {
+                        execute(UpdateClip(applyToClipId, "Apply LUT") { it.copy(color = it.color.copy(lutId = r.id)) })
+                    }
+                }
+                is ImportOutcome.Failed -> showMessage("Couldn't import the LUT: ${r.reason}")
+            }
+        }
     }
 
     fun deleteSelection(ripple: Boolean = false) {

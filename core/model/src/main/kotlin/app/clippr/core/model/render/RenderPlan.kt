@@ -1,8 +1,12 @@
 package app.clippr.core.model.render
 
+import app.clippr.core.model.ColorGrade
 import app.clippr.core.model.MediaAsset
 import app.clippr.core.model.TextStyle
 import app.clippr.core.model.Transform
+import app.clippr.core.model.TransformKeyframe
+import app.clippr.core.model.VisualEffects
+import app.clippr.core.model.VolumeKeyframe
 import app.clippr.core.model.time.FrameRate
 
 /**
@@ -42,8 +46,17 @@ sealed interface VideoSegment {
         val transform: Transform,
         /** Null when this segment contributes no audio (muted, silent or no audio track). */
         val audio: AudioMix?,
+        /** Where the clip starts in the composition; renderers subtract it from frame times. */
+        val timelineStartUs: Long = 0L,
+        val keyframes: List<TransformKeyframe> = emptyList(),
+        val color: ColorGrade = ColorGrade.NONE,
+        val effects: VisualEffects = VisualEffects.NONE,
     ) : VideoSegment {
         val isImage: Boolean get() = asset.isUnbounded
+
+        /** Source time shown at composition time [compositionUs]. */
+        fun sourceTimeAt(compositionUs: Long): Long =
+            sourceStartUs + ((compositionUs - timelineStartUs).coerceIn(0, durationUs) * speed.toDouble()).toLong()
     }
 }
 
@@ -63,9 +76,20 @@ sealed interface AudioSegment {
     ) : AudioSegment
 }
 
-/** Gain applied to one clip's audio. Fades are linear and measured in timeline time. */
-data class AudioMix(val volume: Float, val fadeInUs: Long, val fadeOutUs: Long) {
-    val isUnity: Boolean get() = volume == 1f && fadeInUs == 0L && fadeOutUs == 0L
+/**
+ * Gain applied to one clip's audio. Fades are linear and measured in timeline time. With
+ * [volumeKeyframes], the volume follows them (keyed by source time, mapped through
+ * [sourceStartUs] and [speed]) instead of [volume].
+ */
+data class AudioMix(
+    val volume: Float,
+    val fadeInUs: Long,
+    val fadeOutUs: Long,
+    val volumeKeyframes: List<VolumeKeyframe> = emptyList(),
+    val sourceStartUs: Long = 0L,
+    val speed: Float = 1f,
+) {
+    val isUnity: Boolean get() = volume == 1f && fadeInUs == 0L && fadeOutUs == 0L && volumeKeyframes.isEmpty()
 }
 
 /** A text overlay visible on the half-open interval `[startUs, endUs)`. */
@@ -75,4 +99,9 @@ data class TextOverlayPlan(
     val endUs: Long,
     val style: TextStyle,
     val transform: Transform,
-)
+    val keyframes: List<TransformKeyframe> = emptyList(),
+    val effects: VisualEffects = VisualEffects.NONE,
+    val sourceStartUs: Long = 0L,
+) {
+    val isAnimated: Boolean get() = keyframes.isNotEmpty() || effects.hasFades
+}

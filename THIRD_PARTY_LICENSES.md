@@ -19,6 +19,17 @@ library's published POM for the complete list.
 Test-only dependencies (JUnit 4 — EPL-1.0; AndroidX Test — Apache-2.0) are not shipped in the
 app.
 
+## Fonts
+
+The following fonts are bundled in `core/render/src/main/assets/fonts` under the **SIL Open Font
+License 1.1** (full texts in `assets/fonts/licenses`). The OFL permits bundling fonts with
+software, including GPL software; the fonts themselves remain under the OFL.
+
+Inter, Montserrat, Oswald, Bebas Neue, Anton, Playfair Display, Abril Fatface, Lobster, Pacifico,
+Dancing Script, Caveat, JetBrains Mono — obtained unmodified from the google/fonts repository.
+
+Fonts that users import stay on their device and are not distributed with Clippr.
+
 ## Artwork
 
 Clippr's icons, logo and launcher icon are original works created for this project and are

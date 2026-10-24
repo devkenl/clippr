@@ -1,6 +1,7 @@
 package app.clippr.core.model.edit
 
 import app.clippr.core.model.Clip
+import app.clippr.core.model.ColorGrade
 import app.clippr.core.model.MediaAsset
 import app.clippr.core.model.MediaType
 import app.clippr.core.model.Project
@@ -388,6 +389,10 @@ class UpdateClip(
             transform = proposed.transform.sanitized(),
             audio = proposed.audio.sanitized(),
             text = if (clip.isText) (proposed.text ?: clip.text)?.sanitized() else null,
+            keyframes = proposed.keyframes.sortedBy { it.sourceUs },
+            volumeKeyframes = proposed.volumeKeyframes.sortedBy { it.sourceUs },
+            color = if (clip.isText) ColorGrade.NONE else proposed.color.sanitized(),
+            effects = proposed.effects.sanitized(),
         )
         if (updated == clip) return@editClipTrack null
         track.withClips(track.clips.map { if (it.id == clipId) updated else it })
@@ -413,6 +418,16 @@ data class SetClipSpeed(val clipId: String, val speed: Float) : EditCommand {
     companion object {
         const val MIN_SPEED = 0.25f
         const val MAX_SPEED = 4f
+    }
+}
+
+/** Places a copy of a clip right after the original on the same track (later clips are pushed). */
+data class DuplicateClip(val clipId: String, val newClipId: String) : EditCommand {
+    override val label = "Duplicate clip"
+    override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
+        if (project.sequence.clip(newClipId) != null) return@editClipTrack null
+        val copy = clip.copy(id = newClipId)
+        track.withClips(Placement.place(track.clips, copy, clip.timelineEndUs).clips)
     }
 }
 

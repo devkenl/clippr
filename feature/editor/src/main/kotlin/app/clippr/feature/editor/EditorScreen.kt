@@ -44,6 +44,8 @@ import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.Typeface as ComposeTypeface
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -56,8 +58,10 @@ import app.clippr.core.ui.components.EmptyState
 import app.clippr.core.ui.components.SecondaryButton
 import app.clippr.core.ui.icons.ClipprIcons
 import app.clippr.core.ui.theme.palette
+import app.clippr.feature.inspector.FontChoice
 import app.clippr.feature.inspector.Inspector
 import app.clippr.feature.inspector.InspectorActions
+import app.clippr.feature.timeline.ClipMenuItem
 import app.clippr.feature.timeline.Timeline
 import app.clippr.feature.timeline.TimelineMetrics
 import app.clippr.feature.timeline.TimelineViewport
@@ -65,6 +69,10 @@ import app.clippr.feature.timeline.rememberTimelineMediaCache
 import app.clippr.feature.timeline.rememberTimelineViewport
 
 private val ImportMimeTypes = arrayOf("video/*", "image/*", "audio/*")
+private val FontMimeTypes = arrayOf(
+    "font/*", "application/x-font-ttf", "application/x-font-otf", "application/font-sfnt",
+    "application/vnd.ms-opentype", "application/octet-stream",
+)
 
 @Composable
 fun EditorScreen(
@@ -89,6 +97,21 @@ fun EditorScreen(
         val target = relinkTarget
         if (uri != null && target != null) viewModel.relink(target.id, uri)
         relinkTarget = null
+    }
+    var importTargetClipId by remember { mutableStateOf<String?>(null) }
+    val fontLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.importFont(uri, importTargetClipId)
+    }
+    val lutLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) viewModel.importLut(uri, importTargetClipId)
+    }
+    val requestFont = {
+        importTargetClipId = ui.selectedClip?.takeIf { it.isText }?.id
+        fontLauncher.launch(FontMimeTypes)
+    }
+    val requestLut = {
+        importTargetClipId = ui.selectedClip?.takeIf { !it.isText }?.id
+        lutLauncher.launch(arrayOf("*/*"))
     }
     val requestImport = { importLauncher.launch(ImportMimeTypes) }
     val requestRelink = { asset: MediaAsset ->
@@ -139,7 +162,7 @@ fun EditorScreen(
             else -> {
                 val viewport = rememberTimelineViewport()
                 val media = rememberTimelineMediaCache(viewModel.thumbnails, viewModel.waveforms)
-                val actions = rememberEditorActions(viewModel, project, preview, viewport, onExport, requestImport)
+                val actions = rememberEditorActions(viewModel, project, ui, preview, viewport, onExport, requestImport, requestFont, requestLut)
                 BoxWithConstraints(
                     Modifier
                         .fillMaxSize()
@@ -170,26 +193,51 @@ internal class EditorActions(
     val importMedia: () -> Unit,
     val zoom: (Float) -> Unit,
     val fit: () -> Unit,
+    val duplicate: () -> Unit,
+    val freeze: () -> Unit,
     val inspector: InspectorActions,
+    val fonts: List<FontChoice>,
+    val clipMenu: (String) -> List<ClipMenuItem>,
 )
 
 @Composable
 private fun rememberEditorActions(
     vm: EditorViewModel,
     project: Project,
+    ui: EditorUiState,
     preview: PreviewState,
     viewport: TimelineViewport,
     onExport: (String) -> Unit,
     requestImport: () -> Unit,
+    requestFont: () -> Unit,
+    requestLut: () -> Unit,
 ): EditorActions {
-    val inspector = remember(vm) {
-        InspectorActions(
-            onLive = vm::liveUpdate,
-            onCommit = vm::commitLive,
-            onSpeed = vm::setSpeed,
-            onProjectSettings = vm::changeSettings,
-            onRenameProject = vm::rename,
-        )
+    val inspector = InspectorActions(
+        onLive = vm::liveUpdate,
+        onCommit = vm::commitLive,
+        onSpeed = vm::setSpeed,
+        onProjectSettings = vm::changeSettings,
+        onRenameProject = vm::rename,
+        onSeek = vm::seek,
+        onImportFont = requestFont,
+        onImportLut = requestLut,
+    )
+    val fonts = remember(ui.fonts) {
+        ui.fonts.map { f ->
+            FontChoice(f.id, f.name, FontFamily(ComposeTypeface(vm.resources.fonts.typeface(f.id, false))), f.isCustom)
+        }
+    }
+    val clipMenu: (String) -> List<ClipMenuItem> = { clipId ->
+        val clip = project.sequence.clip(clipId)
+        val isVideo = project.asset(clip?.assetId)?.type == MediaType.VIDEO
+        val underPlayhead = clip?.contains(preview.positionUs) == true
+        buildList {
+            add(ClipMenuItem("Split at playhead", ClipprIcons.Split, enabled = underPlayhead) { vm.splitClip(clipId) })
+            add(ClipMenuItem("Duplicate", ClipprIcons.Copy) { vm.duplicateClip(clipId) })
+            if (isVideo) add(ClipMenuItem("Freeze frame", ClipprIcons.Freeze, enabled = underPlayhead) { vm.freezeFrame(clipId) })
+            add(ClipMenuItem("Delete", ClipprIcons.Trash, destructive = true) { vm.deleteClip(clipId, ripple = false) })
+            add(ClipMenuItem("Ripple delete", ClipprIcons.Trash, destructive = true) { vm.deleteClip(clipId, ripple = true) })
+        }
     }
     val maxUs = project.durationUs
     return EditorActions(
@@ -204,7 +252,11 @@ private fun rememberEditorActions(
         importMedia = requestImport,
         zoom = { f -> viewport.zoomBy(f, viewport.timeToX(preview.positionUs).coerceIn(0f, viewport.widthPx), maxUs) },
         fit = { viewport.fit(maxUs) },
+        duplicate = { ui.selectedClipIds.singleOrNull()?.let(vm::duplicateClip) ?: vm.showMessage("Select one clip to duplicate.") },
+        freeze = { vm.freezeFrame(ui.selectedClip?.id) },
         inspector = inspector,
+        fonts = fonts,
+        clipMenu = clipMenu,
     )
 }
 
@@ -244,6 +296,7 @@ private fun handleShortcut(
         Key.N -> vm.setSnapping(!ui.snapping)
         Key.F -> toggleFullscreen()
         Key.E -> if (ctrl) actions.export() else return false
+        Key.D -> if (ctrl) actions.duplicate() else return false
         Key.Escape -> vm.select(null)
         else -> return false
     }
@@ -315,7 +368,8 @@ private fun TabletEditor(
                             selectedClip = ui.selectedClip,
                             lockedTrackIds = project.sequence.tracks.filter { it.locked }.map { it.id }.toSet(),
                             guides = guides,
-                            onLiveTransform = { id, t -> vm.liveUpdate(id, "Transform") { it.copy(transform = t) } },
+                            onLiveTransform = vm::liveTransform,
+                            fonts = vm.resources.fonts,
                             onCommit = vm::commitLive,
                             onSelect = { vm.select(it) },
                             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -344,6 +398,9 @@ private fun TabletEditor(
                             project = project,
                             selectedClip = ui.selectedClip,
                             actions = actions.inspector,
+                            playheadUs = preview.positionUs,
+                            fonts = actions.fonts,
+                            luts = ui.luts,
                             modifier = Modifier.width(336.dp).fillMaxHeight().background(c.surface),
                         )
                     }
@@ -358,12 +415,14 @@ private fun TabletEditor(
                     onSplit = actions.split,
                     onDelete = { actions.delete(false) },
                     onAddText = actions.addText,
+                    onDuplicate = actions.duplicate,
+                    onFreeze = actions.freeze,
                     onSnapping = { vm.setSnapping(!ui.snapping) },
                     onZoomIn = { actions.zoom(1.25f) },
                     onZoomOut = { actions.zoom(0.8f) },
                     onFit = actions.fit,
                 )
-                EditorTimeline(vm, project, ui, preview, viewport, media, TimelineMetrics.Tablet, Modifier.weight(timelineFraction).fillMaxWidth())
+                EditorTimeline(vm, project, ui, preview, viewport, media, actions, TimelineMetrics.Tablet, Modifier.weight(timelineFraction).fillMaxWidth())
             }
         }
     }
@@ -377,6 +436,7 @@ private fun EditorTimeline(
     preview: PreviewState,
     viewport: TimelineViewport,
     media: app.clippr.feature.timeline.TimelineMediaCache,
+    actions: EditorActions,
     metrics: TimelineMetrics,
     modifier: Modifier,
 ) {
@@ -398,6 +458,7 @@ private fun EditorTimeline(
         onToggleTrackLock = vm::toggleTrackLock,
         onAddAudioTrack = vm::addAudioTrack,
         modifier = modifier,
+        clipMenu = actions.clipMenu,
     )
 }
 
@@ -445,7 +506,8 @@ private fun PhoneEditor(
             selectedClip = ui.selectedClip,
             lockedTrackIds = project.sequence.tracks.filter { it.locked }.map { it.id }.toSet(),
             guides = guides,
-            onLiveTransform = { id, t -> vm.liveUpdate(id, "Transform") { it.copy(transform = t) } },
+            onLiveTransform = vm::liveTransform,
+            fonts = vm.resources.fonts,
             onCommit = vm::commitLive,
             onSelect = { vm.select(it) },
             modifier = Modifier.fillMaxWidth().weight(0.42f),
@@ -474,18 +536,22 @@ private fun PhoneEditor(
             onSplit = actions.split,
             onDelete = { actions.delete(false) },
             onAddText = actions.addText,
+            onDuplicate = actions.duplicate,
+            onFreeze = actions.freeze,
             onSnapping = { vm.setSnapping(!ui.snapping) },
             onZoomIn = { actions.zoom(1.25f) },
             onZoomOut = { actions.zoom(0.8f) },
             onFit = actions.fit,
         )
-        EditorTimeline(vm, project, ui, preview, viewport, media, TimelineMetrics.Phone, Modifier.weight(0.58f).fillMaxWidth())
+        EditorTimeline(vm, project, ui, preview, viewport, media, actions, TimelineMetrics.Phone, Modifier.weight(0.58f).fillMaxWidth())
         ToolDrawer(
             hasSelection = ui.selectedClipIds.isNotEmpty(),
             onMedia = { sheet = PhoneSheet.MEDIA },
             onSplit = actions.split,
             onDelete = { actions.delete(false) },
             onText = actions.addText,
+            onDuplicate = actions.duplicate,
+            onFreeze = actions.freeze,
             onEdit = { sheet = PhoneSheet.INSPECTOR },
             onProject = { sheet = PhoneSheet.PROJECT },
         )
@@ -526,7 +592,7 @@ private fun PhoneEditor(
                     if (clip == null) {
                         Text("Select a clip on the timeline first.", color = c.textSecondary, modifier = Modifier.padding(24.dp))
                     } else {
-                        Inspector(project, clip, actions.inspector, Modifier.fillMaxWidth().height(520.dp))
+                        Inspector(project, clip, actions.inspector, Modifier.fillMaxWidth().height(520.dp), preview.positionUs, actions.fonts, ui.luts)
                     }
                 }
                 PhoneSheet.PROJECT -> Inspector(project, null, actions.inspector, Modifier.fillMaxWidth().height(520.dp))
@@ -553,6 +619,8 @@ private fun FullscreenPreview(
             lockedTrackIds = emptySet(),
             guides = guides,
             onLiveTransform = { _, _ -> },
+            fonts = vm.resources.fonts,
+            interactive = false,
             onCommit = {},
             onSelect = {},
             modifier = Modifier.weight(1f).fillMaxWidth(),

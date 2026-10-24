@@ -101,7 +101,7 @@ class PreviewEngine(context: Context) {
         if (key == lastKey) return
         lastKey = key
 
-        val composition = CompositionFactory.create(plan, w, h)
+        val composition = CompositionFactory.create(plan, w, h, RenderResources.get(appContext))
         if (composition == null) {
             // Nothing to show: free decoders until the timeline has content again.
             release()

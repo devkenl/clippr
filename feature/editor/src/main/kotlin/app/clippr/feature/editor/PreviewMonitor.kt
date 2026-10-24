@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import app.clippr.core.model.Animation
 import app.clippr.core.model.AspectRatioPreset
 import app.clippr.core.model.Clip
 import app.clippr.core.model.Project
@@ -44,6 +45,7 @@ import app.clippr.core.model.TrackKind
 import app.clippr.core.model.Transform
 import app.clippr.core.model.render.ClipFrame
 import app.clippr.core.model.render.FrameGeometry
+import app.clippr.core.render.FontLibrary
 import app.clippr.core.render.PreviewEngine
 import app.clippr.core.render.TextRenderer
 import app.clippr.core.ui.icons.ClipprIcons
@@ -72,8 +74,11 @@ enum class GuideMode(val label: String) {
 
 /**
  * The preview monitor: the player's SurfaceView at the project's aspect ratio, with selection
- * handles and guides drawn on top. With a visual clip selected under the playhead, drag moves
- * it, pinch scales, twist rotates and double-tap resets its placement.
+ * handles and guides drawn on top.
+ *
+ * Direct manipulation: touching any visible clip (text or video under the playhead) selects it;
+ * dragging moves it, pinching scales and twisting rotates. Double-tap resets its placement. With
+ * keyframes, edits update the keyframe at the playhead (see EditorViewModel.liveTransform).
  */
 @Composable
 fun PreviewMonitor(
@@ -83,10 +88,12 @@ fun PreviewMonitor(
     selectedClip: Clip?,
     lockedTrackIds: Set<String>,
     guides: GuideMode,
+    fonts: FontLibrary?,
     onLiveTransform: (clipId: String, Transform) -> Unit,
     onCommit: () -> Unit,
     onSelect: (String?) -> Unit,
     modifier: Modifier = Modifier,
+    interactive: Boolean = true,
 ) {
     val c = palette
     val aspect = project.settings.aspectRatio
@@ -106,19 +113,23 @@ fun PreviewMonitor(
             val activeClip = selectedClip?.takeIf { it.contains(playheadUs) && isVisual(project, it) }
             val editable = activeClip != null && project.sequence.trackOfClip(activeClip.id)?.id !in lockedTrackIds
 
-            TransformLayer(
-                project = project,
-                playheadUs = playheadUs,
-                activeClip = if (editable) activeClip else null,
-                onLiveTransform = onLiveTransform,
-                onCommit = onCommit,
-                onSelect = onSelect,
-            )
+            if (interactive) {
+                TransformLayer(
+                    project = project,
+                    playheadUs = playheadUs,
+                    selectedClip = activeClip,
+                    lockedTrackIds = lockedTrackIds,
+                    fonts = fonts,
+                    onLiveTransform = onLiveTransform,
+                    onCommit = onCommit,
+                    onSelect = onSelect,
+                )
+            }
 
             Canvas(Modifier.fillMaxSize()) {
                 drawGuides(guides, project, c.textPrimary)
                 if (activeClip != null) {
-                    frameFor(project, activeClip, size)?.let { drawSelection(it, c.accent, editable) }
+                    frameFor(project, activeClip, playheadUs, size, fonts)?.let { drawSelection(it, c.accent, editable) }
                 }
             }
 
@@ -140,15 +151,15 @@ private fun isVisual(project: Project, clip: Clip): Boolean {
     return track.kind == TrackKind.VIDEO
 }
 
-/** The rotated rectangle a clip occupies in a view of [size] showing the whole canvas. */
-private fun frameFor(project: Project, clip: Clip, size: Size): ClipFrame? {
+/** The rotated rectangle a clip occupies at [timeUs] in a view of [size] showing the whole canvas. */
+private fun frameFor(project: Project, clip: Clip, timeUs: Long, size: Size, fonts: FontLibrary?): ClipFrame? {
     if (size.width <= 0f || size.height <= 0f) return null
-    val t = clip.transform
+    val t = Animation.transformAtTimeline(clip, timeUs)
     val style = clip.text
     if (style != null) {
         val canvasW = project.settings.width
         val canvasH = project.settings.height
-        val m = TextRenderer.measure(style, canvasW, canvasH, t.scale)
+        val m = TextRenderer.measure(style, canvasW, canvasH, t.scale, fonts)
         val k = size.width / canvasW
         return ClipFrame(
             centerX = size.width / 2f * (1f + t.positionX.coerceIn(-1f, 1f)),
@@ -166,12 +177,14 @@ private fun frameFor(project: Project, clip: Clip, size: Size): ClipFrame? {
 private fun TransformLayer(
     project: Project,
     playheadUs: Long,
-    activeClip: Clip?,
+    selectedClip: Clip?,
+    lockedTrackIds: Set<String>,
+    fonts: FontLibrary?,
     onLiveTransform: (String, Transform) -> Unit,
     onCommit: () -> Unit,
     onSelect: (String?) -> Unit,
 ) {
-    val latest by rememberUpdatedState(TransformInputs(project, playheadUs, activeClip, onLiveTransform, onCommit, onSelect))
+    val latest by rememberUpdatedState(TransformInputs(project, playheadUs, selectedClip, lockedTrackIds, fonts, onLiveTransform, onCommit, onSelect))
     var lastTap by remember { mutableLongStateOf(0L) }
     Box(
         Modifier
@@ -181,23 +194,39 @@ private fun TransformLayer(
                     val down = awaitFirstDown()
                     val inputs = latest
                     val viewSize = Size(size.width.toFloat(), size.height.toFloat())
-                    val clip = inputs.activeClip
-                    val frame = clip?.let { frameFor(inputs.project, it, viewSize) }
-                    var transform = clip?.transform
+                    fun editable(c: Clip) = inputs.project.sequence.trackOfClip(c.id)?.id !in inputs.lockedTrackIds
+                    val selected = inputs.selectedClip?.takeIf { editable(it) }
+                    val selectedFrame = selected?.let { frameFor(inputs.project, it, inputs.playheadUs, viewSize, inputs.fonts) }
+                    val hit = hitClip(inputs.project, inputs.playheadUs, down.position, viewSize, inputs.fonts)?.takeIf { editable(it) }
+                    // Prefer the selected clip when the finger is on it; otherwise grab what is under the finger.
+                    var target: Clip? = when {
+                        selectedFrame?.contains(down.position.x, down.position.y) == true -> selected
+                        hit != null -> hit
+                        else -> null
+                    }
+                    var transform = target?.let { Animation.transformAtTimeline(it, inputs.playheadUs) }
                     var moved = false
-                    var multiTouch = false
-                    val startedInside = frame?.contains(down.position.x, down.position.y) == true
+                    var announced = false
                     while (true) {
                         val event = awaitPointerEvent()
                         if (event.changes.none { it.pressed }) break
-                        if (event.changes.count { it.pressed } >= 2) multiTouch = true
-                        val t = transform
-                        if (clip == null || t == null || !(startedInside || multiTouch)) continue
+                        if (target == null && event.changes.count { it.pressed } >= 2) {
+                            // Two fingers anywhere: work on the selected clip, or the video under the playhead.
+                            target = selected ?: inputs.project.sequence.mainVideoTrack
+                                ?.takeIf { it.id !in inputs.lockedTrackIds }?.clipAt(inputs.playheadUs)
+                            transform = target?.let { Animation.transformAtTimeline(it, inputs.playheadUs) }
+                        }
+                        val clip = target ?: continue
+                        val t = transform ?: continue
                         val pan = event.calculatePan()
                         val zoom = event.calculateZoom()
                         val rotation = event.calculateRotation()
                         if (pan == Offset.Zero && zoom == 1f && rotation == 0f) continue
-                        moved = moved || event.changes.any { it.positionChanged() }
+                        if (!announced && clip.id != inputs.selectedClip?.id) {
+                            inputs.onSelect(clip.id)
+                        }
+                        announced = true
+                        moved = true
                         val next = t.copy(
                             positionX = t.positionX + pan.x / (viewSize.width / 2f),
                             positionY = t.positionY - pan.y / (viewSize.height / 2f),
@@ -213,13 +242,14 @@ private fun TransformLayer(
                     } else {
                         // A tap: double-tap resets placement, single tap selects what is under it.
                         val now = System.currentTimeMillis()
-                        if (clip != null && startedInside && now - lastTap < viewConfiguration.doubleTapTimeoutMillis) {
-                            inputs.onLiveTransform(clip.id, Transform(crop = clip.transform.crop, fit = clip.transform.fit))
+                        val tapped = if (selectedFrame?.contains(down.position.x, down.position.y) == true) selected else hit
+                        if (tapped != null && tapped.id == inputs.selectedClip?.id && now - lastTap < viewConfiguration.doubleTapTimeoutMillis) {
+                            inputs.onLiveTransform(tapped.id, Transform(crop = tapped.transform.crop, fit = tapped.transform.fit))
                             inputs.onCommit()
                             lastTap = 0L
                         } else {
                             lastTap = now
-                            inputs.onSelect(hitClip(inputs.project, inputs.playheadUs, down.position, viewSize)?.id)
+                            inputs.onSelect(hitClip(inputs.project, inputs.playheadUs, down.position, viewSize, inputs.fonts)?.id)
                         }
                     }
                 }
@@ -230,21 +260,23 @@ private fun TransformLayer(
 private data class TransformInputs(
     val project: Project,
     val playheadUs: Long,
-    val activeClip: Clip?,
+    val selectedClip: Clip?,
+    val lockedTrackIds: Set<String>,
+    val fonts: FontLibrary?,
     val onLiveTransform: (String, Transform) -> Unit,
     val onCommit: () -> Unit,
     val onSelect: (String?) -> Unit,
 )
 
 /** Topmost visible clip at [point]: text overlays first, then the main video clip. */
-private fun hitClip(project: Project, timeUs: Long, point: Offset, size: Size): Clip? {
+private fun hitClip(project: Project, timeUs: Long, point: Offset, size: Size, fonts: FontLibrary?): Clip? {
     val textHit = project.sequence.tracks
         .filter { it.kind == TrackKind.TEXT }
         .mapNotNull { it.clipAt(timeUs) }
-        .lastOrNull { frameFor(project, it, size)?.contains(point.x, point.y) == true }
+        .lastOrNull { frameFor(project, it, timeUs, size, fonts)?.contains(point.x, point.y) == true }
     if (textHit != null) return textHit
     val video = project.sequence.mainVideoTrack?.clipAt(timeUs) ?: return null
-    return video.takeIf { frameFor(project, it, size)?.contains(point.x, point.y) == true }
+    return video.takeIf { frameFor(project, it, timeUs, size, fonts)?.contains(point.x, point.y) == true }
 }
 
 private fun DrawScope.drawSelection(frame: ClipFrame, accent: Color, editable: Boolean) {

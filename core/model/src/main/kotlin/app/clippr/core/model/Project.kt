@@ -193,6 +193,12 @@ data class Clip(
     val transform: Transform = Transform.DEFAULT,
     val audio: ClipAudio = ClipAudio.DEFAULT,
     val text: TextStyle? = null,
+    /** Animation of placement and opacity, keyed by source time (see [Animation]). */
+    val keyframes: List<TransformKeyframe> = emptyList(),
+    /** Volume automation, keyed by source time. Overrides [ClipAudio.volume] when present. */
+    val volumeKeyframes: List<VolumeKeyframe> = emptyList(),
+    val color: ColorGrade = ColorGrade.NONE,
+    val effects: VisualEffects = VisualEffects.NONE,
 ) {
     init {
         require(sourceEndUs > sourceStartUs) { "Clip $id has empty source range" }
@@ -332,6 +338,42 @@ data class TextStyle(
     val backgroundArgb: Int = 0x00000000,
     val bold: Boolean = true,
     val alignment: TextAlignment = TextAlignment.CENTER,
+    /** A built-in font id (see [FontIds]) or `custom:<file>` for an imported font. */
+    val fontId: String = FontIds.DEFAULT,
+    /** Outline width relative to the text size; 0 disables the outline. */
+    val strokeWidth: Float = 0f,
+    val strokeColorArgb: Int = 0xFF101116.toInt(),
+    val shadow: Boolean = false,
 ) {
-    fun sanitized(): TextStyle = copy(sizeFraction = sizeFraction.coerceIn(0.01f, 0.5f))
+    fun sanitized(): TextStyle = copy(
+        sizeFraction = sizeFraction.coerceIn(0.01f, 0.5f),
+        strokeWidth = strokeWidth.coerceIn(0f, 0.3f),
+    )
+}
+
+/** Identifiers of the fonts bundled with Clippr. Imported fonts use `custom:<file name>`. */
+object FontIds {
+    const val DEFAULT = "inter"
+    const val CUSTOM_PREFIX = "custom:"
+
+    /** Built-in font ids in display order, with display names. */
+    val BUILT_IN: List<Pair<String, String>> = listOf(
+        "inter" to "Inter",
+        "montserrat" to "Montserrat",
+        "oswald" to "Oswald",
+        "bebas_neue" to "Bebas Neue",
+        "anton" to "Anton",
+        "playfair_display" to "Playfair Display",
+        "abril_fatface" to "Abril Fatface",
+        "lobster" to "Lobster",
+        "pacifico" to "Pacifico",
+        "dancing_script" to "Dancing Script",
+        "caveat" to "Caveat",
+        "jetbrains_mono" to "JetBrains Mono",
+        "system_sans" to "System Sans",
+        "system_serif" to "System Serif",
+        "system_mono" to "System Mono",
+    )
+
+    fun isCustom(id: String): Boolean = id.startsWith(CUSTOM_PREFIX)
 }

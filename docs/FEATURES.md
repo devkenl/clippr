@@ -3,8 +3,8 @@
 An honest checklist. Status legend:
 
 - ✅ **Tested** — implemented and verified by automated tests that were actually run.
-- 🟡 **Written** — implemented in code, but not yet compiled or run on a device (the first
-  build environment had no Android SDK; see IMPLEMENTATION_PLAN.md). Treat as unverified.
+- 🟢 **Builds** — compiles in CI and has been used on a device by the project owner (0.1.0).
+- 🟡 **Written** — compiles in CI but has not been tried on a device yet. Treat as unverified.
 - ⬜ **Not implemented** — planned; not represented in the UI as working.
 
 ## Editing engine (`core:model`)
@@ -24,6 +24,9 @@ An honest checklist. Status legend:
 | Transform geometry (fit/fill, crop, scale, clockwise rotation, position) | ✅ |
 | Versioned JSON project format with exact 64-bit times | ✅ |
 | Invariant checker + randomized edit testing | ✅ |
+| Keyframes (position, scale, rotation, opacity; volume) keyed to source time, with easing | ✅ |
+| Colour grade maths (exposure, contrast, highlights, shadows, saturation, temperature, tint, filters) baked to a 3D LUT; `.cube` parser | ✅ |
+| Duplicate clip; visual effects and fade settings in the model and project format | ✅ |
 
 ## Application (Android)
 
@@ -42,7 +45,14 @@ An honest checklist. Status legend:
 | Preview: CompositionPlayer playback, scrubbing, frame step, fullscreen, preview quality | 🟡 |
 | Preview overlays: selection box, drag/pinch/rotate the selected clip, double-tap reset, safe areas, 9:16 / 1:1 / 4:5 guides | 🟡 |
 | Inspector: position, scale, rotation, opacity, fit/fill, crop, speed presets, volume, mute, fade in/out, text content/size/colour/background/alignment/bold, project format | 🟡 |
-| Text overlays (rendered identically in preview and export) | 🟡 |
+| Text overlays (rendered identically in preview and export) | 🟢 |
+| 15 fonts (12 bundled OFL families + 3 system), font import (.ttf/.otf), outline, shadow, text fade in/out | 🟡 |
+| Preview: touch any visible clip to select it; drag / pinch / rotate it; double-tap resets | 🟡 |
+| Timeline: long-press (or right-click) a clip for Split, Duplicate, Freeze frame, Delete, Ripple delete | 🟡 |
+| Keyframe UI: add/remove at playhead, previous/next, easing, clear; diamonds on timeline clips | 🟡 |
+| Colour section: filters with strength, 7 adjustments, `.cube` LUT import | 🟡 |
+| Effects: blur, vignette, film grain; fade from/to black | 🟡 |
+| Freeze frame, duplicate (toolbar, drawer, Ctrl+D) | 🟡 |
 | Keyboard shortcuts (see below) | 🟡 |
 | Export: MP4 (H.264 + AAC), 720p/1080p/4K and 24–60 fps filtered by device encoder support, quality presets, real progress, cancel, save to Movies/Clippr, share, play | 🟡 |
 
@@ -51,10 +61,10 @@ An honest checklist. Status legend:
 | Feature | Status |
 |---|---|
 | Multiple overlapping video layers, picture-in-picture | ⬜ (one composited video track in the MVP) |
-| Transitions (cross dissolve, fade to black between clips) | ⬜ |
-| Keyframes | ⬜ |
-| Colour workspace, LUTs, scopes | ⬜ |
-| Effects (blur, sharpen, glow, grain, vignette, chroma key, masks) | ⬜ |
+| Cross-dissolve transitions (dip to black is possible with clip fades) | ⬜ |
+| Per-property keyframe curves, speed ramps | ⬜ |
+| Colour wheels, curves, scopes (waveform/vectorscope/histogram) | ⬜ |
+| Sharpen, glow, chroma key, masks | ⬜ |
 | Audio EQ, panning, noise reduction, peak meters | ⬜ |
 | Ripple/roll/slip/slide tools, markers, nested sequences, compound clips, adjustment layers | ⬜ |
 | Drag and drop from media panel to timeline (tap adds at the playhead instead) | ⬜ |
@@ -80,6 +90,7 @@ An honest checklist. Status legend:
 | N | Toggle snapping |
 | F | Fullscreen preview |
 | Ctrl+E | Export |
+| Ctrl+D | Duplicate selected clip |
 | Esc | Clear selection |
 
 ## Acceptance flow (to verify on a device)

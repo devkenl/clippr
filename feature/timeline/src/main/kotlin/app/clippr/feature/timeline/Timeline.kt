@@ -21,12 +21,15 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -61,6 +64,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.isCtrlPressed
 import androidx.compose.ui.input.pointer.isMetaPressed
 import androidx.compose.ui.input.pointer.isShiftPressed
+import androidx.compose.ui.input.pointer.isSecondaryPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -124,6 +128,15 @@ data class TimelineMetrics(
         val Phone = TimelineMetrics(headerWidth = 52.dp, rulerHeight = 28.dp, videoRow = 60.dp, audioRow = 46.dp, textRow = 36.dp, compactHeaders = true)
     }
 }
+
+/** An action offered when a clip is long-pressed (touch) or right-clicked (mouse). */
+class ClipMenuItem(
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val destructive: Boolean = false,
+    val enabled: Boolean = true,
+    val onClick: () -> Unit,
+)
 
 /** An in-progress drag. The timeline renders [command] applied to the project while dragging. */
 private sealed interface DragOp {
@@ -189,6 +202,7 @@ fun Timeline(
     onToggleTrackLock: (String) -> Unit,
     onAddAudioTrack: () -> Unit,
     modifier: Modifier = Modifier,
+    clipMenu: (clipId: String) -> List<ClipMenuItem> = { emptyList() },
 ) {
     val c = palette
     val density = LocalDensity.current
@@ -269,6 +283,7 @@ fun Timeline(
                     maxLeftUs = maxLeftUs,
                     onSelect = onSelect,
                     onEdit = onEdit,
+                    clipMenu = clipMenu,
                     modifier = Modifier.weight(1f).height(contentHeight),
                 )
             }
@@ -510,6 +525,7 @@ private fun TrackArea(
     maxLeftUs: Long,
     onSelect: (String?, Boolean) -> Unit,
     onEdit: (EditCommand) -> Unit,
+    clipMenu: (String) -> List<ClipMenuItem>,
     modifier: Modifier,
 ) {
     val c = palette
@@ -524,9 +540,12 @@ private fun TrackArea(
     var flingJob by remember { mutableStateOf<Job?>(null) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var lastTapPos by remember { mutableStateOf(Offset.Zero) }
+    var menu by remember { mutableStateOf<Pair<String, Offset>?>(null) }
 
+    Box(modifier) {
     Canvas(
-        modifier
+        Modifier
+            .fillMaxSize()
             .pointerInput(viewport) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
@@ -534,6 +553,23 @@ private fun TrackArea(
                     val s = state.value
                     val hit = hitTest(down.position, s, viewport, density)
                     val slop = viewConfiguration.touchSlop
+                    // Mouse right-click opens the clip menu straight away.
+                    if (currentEvent.buttons.isSecondaryPressed) {
+                        val clipHit = when (hit) {
+                            is Hit.OnClip -> hit.clip
+                            is Hit.TrimHandle -> hit.clip
+                            is Hit.Empty -> null
+                        }
+                        if (clipHit != null) {
+                            if (clipHit.id !in s.selected) s.onSelect(clipHit.id, false)
+                            menu = clipHit.id to down.position
+                        }
+                        do {
+                            val ev = awaitPointerEvent()
+                            ev.changes.forEach { it.consume() }
+                        } while (ev.changes.any { it.pressed })
+                        return@awaitEachGesture
+                    }
                     val outcome: Outcome = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
                         var result: Outcome? = null
                         while (result == null) {
@@ -572,7 +608,14 @@ private fun TrackArea(
                             if (target != null) {
                                 haptics.performHapticFeedback(HapticFeedbackType.LongPress)
                                 if (target.clip.id !in s.selected) s.onSelect(target.clip.id, false)
-                                moveLoop(down, target.clip, target.row, s, viewport, density, haptics)
+                                val moved = moveLoop(down, target.clip, target.row, s, viewport, density, haptics)
+                                // Long-press and release without dragging: show the clip's actions.
+                                if (!moved) menu = target.clip.id to down.position
+                            } else if (hit is Hit.OnClip) {
+                                // Locked track: actions are still available (e.g. unlock elsewhere), so offer the menu.
+                                haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                                s.onSelect(hit.clip.id, false)
+                                menu = hit.clip.id to down.position
                             }
                         }
                         is Outcome.Drag -> when {
@@ -664,6 +707,27 @@ private fun TrackArea(
             drawLine(c.playhead, Offset(px, 0f), Offset(px, size.height), 2.dp.toPx(), cap = StrokeCap.Square)
         }
     }
+    menu?.let { (clipId, pos) ->
+        val items = clipMenu(clipId)
+        if (items.isNotEmpty()) {
+            Box(Modifier.offset { IntOffset(pos.x.roundToInt(), pos.y.roundToInt()) }) {
+                DropdownMenu(expanded = true, onDismissRequest = { menu = null }) {
+                    items.forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(item.label, color = if (item.destructive) c.danger else c.textPrimary) },
+                            leadingIcon = { Icon(item.icon, contentDescription = null, tint = if (item.destructive) c.danger else c.textSecondary) },
+                            enabled = item.enabled,
+                            onClick = {
+                                menu = null
+                                item.onClick()
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+    }
 }
 
 /** Snapshot of everything gesture code needs, refreshed every composition. */
@@ -709,8 +773,9 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.mov
     viewport: TimelineViewport,
     density: androidx.compose.ui.unit.Density,
     haptics: androidx.compose.ui.hapticfeedback.HapticFeedback,
-) {
+): Boolean {
     val grabOffsetUs = viewport.xToTime(down.position.x) - clip.timelineStartUs
+    var moved = false
     val targets = if (s.snapping) Snapping.targets(s.project.sequence, s.playheadUs, setOf(clip.id)) else emptyList()
     val threshold = viewport.pxToDurationUs(with(density) { 10.dp.toPx() })
     val edge = with(density) { 28.dp.toPx() }
@@ -723,6 +788,8 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.mov
         val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
         if (!ch.pressed) break
         ch.consume()
+        if (!moved && (ch.position - down.position).getDistance() <= viewConfiguration.touchSlop) continue
+        moved = true
         val x = ch.position.x
         if (x < edge) viewport.scrollBy(-(edge - x) / 3f, s.maxLeftUs + clip.durationUs)
         if (x > viewport.widthPx - edge) viewport.scrollBy((x - (viewport.widthPx - edge)) / 3f, s.maxLeftUs + clip.durationUs)
@@ -737,7 +804,8 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.mov
         s.setDrag(op)
     }
     s.setDrag(null)
-    if (op.startUs != clip.timelineStartUs || op.trackId != startRow.track.id) s.onEdit(op.command())
+    if (moved && (op.startUs != clip.timelineStartUs || op.trackId != startRow.track.id)) s.onEdit(op.command())
+    return moved
 }
 
 private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.trimLoop(
@@ -934,6 +1002,22 @@ private fun DrawScope.drawClip(
         radius,
         style = Stroke(borderWidth),
     )
+    // Keyframe markers along the bottom edge.
+    val keyTimes = clip.keyframes.map { it.sourceUs } + clip.volumeKeyframes.map { it.sourceUs }
+    if (keyTimes.isNotEmpty()) {
+        val d = 4.dp.toPx()
+        val ky = top + h - d - 2.dp.toPx()
+        keyTimes.forEach { src ->
+            val tl = app.clippr.core.model.Animation.timelineTimeOf(clip, src) ?: return@forEach
+            val kx = viewport.timeToX(tl)
+            if (kx < x0 - 1f || kx > x0 + w + 1f) return@forEach
+            val diamond = Path().apply {
+                moveTo(kx, ky - d); lineTo(kx + d, ky); lineTo(kx, ky + d); lineTo(kx - d, ky); close()
+            }
+            drawPath(diamond, Color.White.copy(alpha = alpha))
+            drawPath(diamond, colors.accentStrong, style = Stroke(1.dp.toPx()))
+        }
+    }
     if (selected && !row.track.locked) {
         val hw = 9.dp.toPx()
         listOf(x0, x0 + w - hw).forEach { hx ->

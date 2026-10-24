@@ -1,6 +1,12 @@
 package app.clippr.core.model.serialization
 
+import app.clippr.core.model.ColorGrade
 import app.clippr.core.model.Crop
+import app.clippr.core.model.Easing
+import app.clippr.core.model.FilterPreset
+import app.clippr.core.model.TransformKeyframe
+import app.clippr.core.model.VisualEffects
+import app.clippr.core.model.VolumeKeyframe
 import app.clippr.core.model.FitMode
 import app.clippr.core.model.Fixtures
 import app.clippr.core.model.SEC
@@ -36,7 +42,18 @@ class ProjectCodecTest {
                 audio = it.audio.copy(volume = 0.42f, fadeInUs = 1_234_567, fadeOutUs = 7),
             )
         }.apply(p)
-        p = AddTextClip("t1", TextStyle("Hello\tworld", colorArgb = 0xFFA78BFA.toInt(), alignment = TextAlignment.END)).apply(p)
+        p = AddTextClip(
+            "t1",
+            TextStyle("Hello\tworld", colorArgb = 0xFFA78BFA.toInt(), alignment = TextAlignment.END, fontId = "custom:abc.ttf", strokeWidth = 0.1f, shadow = true),
+        ).apply(p)
+        p = UpdateClip("c1", "look") {
+            it.copy(
+                keyframes = listOf(TransformKeyframe(0, 0f, 0f, 1f, 0f, 1f), TransformKeyframe(2_000_000, 0.5f, 0.1f, 1.4f, 15f, 0.8f, Easing.HOLD)),
+                volumeKeyframes = listOf(VolumeKeyframe(0, 0.2f), VolumeKeyframe(1_000_000, 0.9f, Easing.EASE_OUT)),
+                color = ColorGrade(exposure = 0.5f, contrast = -0.2f, filter = FilterPreset.TEAL_ORANGE, filterStrength = 0.7f, lutId = "film.cube"),
+                effects = VisualEffects(blur = 0.3f, vignette = 0.5f, grain = 0.2f, fadeInUs = 500_000, fadeOutUs = 250_000),
+            )
+        }.apply(p)
         p = SetTrackLocked(TimelineSequence.MAIN_AUDIO_TRACK_ID, true).apply(p)
 
         val decoded = ProjectCodec.decode(ProjectCodec.encode(p))

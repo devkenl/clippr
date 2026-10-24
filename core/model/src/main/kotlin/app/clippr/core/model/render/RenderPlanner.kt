@@ -42,6 +42,10 @@ object RenderPlanner {
                         speed = clip.speed,
                         transform = clip.transform,
                         audio = if (videoTrack.muted || !asset.hasAudio) null else mixFor(clip),
+                        timelineStartUs = clip.timelineStartUs,
+                        keyframes = clip.keyframes,
+                        color = clip.color,
+                        effects = clip.effects,
                     )
                 }
                 cursor = clip.timelineEndUs
@@ -84,7 +88,16 @@ object RenderPlanner {
             .mapNotNull { clip ->
                 val style = clip.text ?: return@mapNotNull null
                 if (style.text.isBlank()) return@mapNotNull null
-                TextOverlayPlan(clip.id, clip.timelineStartUs, clip.timelineEndUs, style, clip.transform)
+                TextOverlayPlan(
+                    clipId = clip.id,
+                    startUs = clip.timelineStartUs,
+                    endUs = clip.timelineEndUs,
+                    style = style,
+                    transform = clip.transform,
+                    keyframes = clip.keyframes,
+                    effects = clip.effects,
+                    sourceStartUs = clip.sourceStartUs,
+                )
             }
             .sortedBy { it.startUs }
 
@@ -102,7 +115,9 @@ object RenderPlanner {
     /** The clip's gain, or null if it is silent. Fades are shrunk to fit the clip. */
     fun mixFor(clip: Clip): AudioMix? {
         val audio: ClipAudio = clip.audio
-        if (audio.isSilent) return null
+        if (audio.muted) return null
+        if (clip.volumeKeyframes.isEmpty() && audio.volume <= 0f) return null
+        if (clip.volumeKeyframes.isNotEmpty() && clip.volumeKeyframes.all { it.volume <= 0f }) return null
         val duration = clip.durationUs
         var fadeIn = audio.fadeInUs.coerceIn(0, duration)
         var fadeOut = audio.fadeOutUs.coerceIn(0, duration)
@@ -111,6 +126,13 @@ object RenderPlanner {
             fadeIn = (fadeIn * k).toLong()
             fadeOut = (fadeOut * k).toLong()
         }
-        return AudioMix(audio.volume.coerceIn(0f, 1f), fadeIn, fadeOut)
+        return AudioMix(
+            volume = audio.volume.coerceIn(0f, 1f),
+            fadeInUs = fadeIn,
+            fadeOutUs = fadeOut,
+            volumeKeyframes = clip.volumeKeyframes,
+            sourceStartUs = clip.sourceStartUs,
+            speed = clip.speed,
+        )
     }
 }

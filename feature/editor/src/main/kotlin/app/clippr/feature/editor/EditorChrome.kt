@@ -217,6 +217,8 @@ internal fun TimelineToolbar(
     onSplit: () -> Unit,
     onDelete: () -> Unit,
     onAddText: () -> Unit,
+    onDuplicate: () -> Unit,
+    onFreeze: () -> Unit,
     onSnapping: () -> Unit,
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
@@ -230,6 +232,8 @@ internal fun TimelineToolbar(
         if (!compact) {
             ToolButton(ClipprIcons.Split, "Split at playhead (S)", onSplit, size = 40.dp)
             ToolButton(ClipprIcons.Trash, "Delete selection (Delete)", onDelete, enabled = hasSelection, size = 40.dp)
+            ToolButton(ClipprIcons.Copy, "Duplicate clip (Ctrl+D)", onDuplicate, enabled = hasSelection, size = 40.dp)
+            ToolButton(ClipprIcons.Freeze, "Freeze frame", onFreeze, size = 40.dp)
             ToolButton(ClipprIcons.Text, "Add title (T)", onAddText, size = 40.dp)
         }
         Spacer(Modifier.weight(1f))
@@ -250,6 +254,8 @@ internal fun ToolDrawer(
     onText: () -> Unit,
     onEdit: () -> Unit,
     onProject: () -> Unit,
+    onDuplicate: () -> Unit,
+    onFreeze: () -> Unit,
 ) {
     val c = palette
     Row(
@@ -264,6 +270,8 @@ internal fun ToolDrawer(
         DrawerTool(ClipprIcons.Split, "Split", onSplit)
         DrawerTool(ClipprIcons.Sliders, "Edit", onEdit, enabled = hasSelection)
         DrawerTool(ClipprIcons.Trash, "Delete", onDelete, enabled = hasSelection)
+        DrawerTool(ClipprIcons.Copy, "Duplicate", onDuplicate, enabled = hasSelection)
+        DrawerTool(ClipprIcons.Freeze, "Freeze", onFreeze)
         DrawerTool(ClipprIcons.Text, "Text", onText)
         DrawerTool(ClipprIcons.Layers, "Project", onProject)
     }

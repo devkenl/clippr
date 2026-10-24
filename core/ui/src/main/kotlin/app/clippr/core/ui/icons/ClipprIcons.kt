@@ -484,6 +484,60 @@ object ClipprIcons {
         }
     }
 
+    val Keyframe by lazy {
+        icon("Keyframe") { stroke { moveTo(12f, 4f); lineTo(20f, 12f); lineTo(12f, 20f); lineTo(4f, 12f); close() } }
+    }
+
+    val KeyframeFilled by lazy {
+        icon("KeyframeFilled") { filled { moveTo(12f, 3.5f); lineTo(20.5f, 12f); lineTo(12f, 20.5f); lineTo(3.5f, 12f); close() } }
+    }
+
+    val ColorWheel by lazy {
+        icon("ColorWheel") {
+            stroke {
+                circle(12f, 12f, 8.5f)
+                moveTo(12f, 3.5f); verticalLineTo(20.5f)
+            }
+            filled {
+                moveTo(12f, 3.5f)
+                arcTo(8.5f, 8.5f, 0f, false, true, 12f, 20.5f)
+                close()
+            }
+        }
+    }
+
+    val Sparkle by lazy {
+        icon("Sparkle") {
+            stroke {
+                moveTo(12f, 3f); lineTo(13.8f, 10.2f); lineTo(21f, 12f); lineTo(13.8f, 13.8f); lineTo(12f, 21f)
+                lineTo(10.2f, 13.8f); lineTo(3f, 12f); lineTo(10.2f, 10.2f); close()
+            }
+        }
+    }
+
+    val Font by lazy {
+        icon("Font") {
+            stroke {
+                moveTo(4f, 19f); lineTo(9f, 5f); lineTo(14f, 19f)
+                moveTo(5.8f, 14f); horizontalLineTo(12.2f)
+                moveTo(16f, 11f); horizontalLineTo(21f)
+                moveTo(18.5f, 8.5f); verticalLineTo(19f)
+            }
+        }
+    }
+
+    val Freeze by lazy {
+        icon("Freeze") {
+            stroke {
+                moveTo(12f, 3f); verticalLineTo(21f)
+                moveTo(4.2f, 7.5f); lineTo(19.8f, 16.5f)
+                moveTo(19.8f, 7.5f); lineTo(4.2f, 16.5f)
+                moveTo(9.5f, 4.5f); lineTo(12f, 6.5f); lineTo(14.5f, 4.5f)
+                moveTo(9.5f, 19.5f); lineTo(12f, 17.5f); lineTo(14.5f, 19.5f)
+            }
+        }
+    }
+
     // --------------------------------------------------------------------------------------
 
     private fun icon(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

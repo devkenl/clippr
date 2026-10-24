@@ -87,7 +87,7 @@ class ExportEngine(context: Context) {
             w,
             h,
         )
-        val composition: Composition = CompositionFactory.create(plan, w, h) ?: run {
+        val composition: Composition = CompositionFactory.create(plan, w, h, RenderResources.get(appContext)) ?: run {
             _state.value = ExportState.Failed("The timeline is empty.")
             return
         }

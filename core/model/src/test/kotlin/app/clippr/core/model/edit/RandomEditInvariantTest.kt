@@ -1,5 +1,6 @@
 package app.clippr.core.model.edit
 
+import app.clippr.core.model.Animation
 import app.clippr.core.model.Fixtures
 import app.clippr.core.model.Project
 import app.clippr.core.model.ProjectIntegrity
@@ -39,7 +40,7 @@ class RandomEditInvariantTest {
             val clips = p.sequence.allClips
             val anyClip = clips.randomOrNull(rnd)
             val t = rnd.nextLong(0, 40 * SEC)
-            val command: EditCommand? = when (rnd.nextInt(12)) {
+            val command: EditCommand? = when (rnd.nextInt(13)) {
                 0, 1 -> AddAssetClip(assets.random(rnd).id, id(), startUs = if (rnd.nextBoolean()) t else null)
                 2 -> anyClip?.let { c ->
                     val target = p.sequence.tracks.random(rnd)
@@ -57,6 +58,19 @@ class RandomEditInvariantTest {
                             transform = it.transform.copy(scale = rnd.nextFloat() * 3f, rotationDegrees = rnd.nextFloat() * 720f),
                             audio = it.audio.copy(volume = rnd.nextFloat(), fadeInUs = rnd.nextLong(0, 3 * SEC)),
                         )
+                    }
+                }
+                11 -> anyClip?.let { c ->
+                    if (rnd.nextBoolean()) {
+                        DuplicateClip(c.id, id())
+                    } else {
+                        UpdateClip(c.id, "keyframe") {
+                            Animation.editTransformAt(
+                                Animation.addTransformKeyframe(it, it.sourceStartUs + rnd.nextLong(0, it.sourceDurationUs), 10_000),
+                                it.sourceStartUs,
+                                10_000,
+                            ) { t -> t.copy(scale = 0.5f + rnd.nextFloat()) }
+                        }
                     }
                 }
                 10 -> if (rnd.nextBoolean()) AddTrack(TrackKind.AUDIO, id()) else {

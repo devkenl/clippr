@@ -1,6 +1,13 @@
 package app.clippr.core.model.serialization
 
 import app.clippr.core.model.Clip
+import app.clippr.core.model.ColorGrade
+import app.clippr.core.model.Easing
+import app.clippr.core.model.FilterPreset
+import app.clippr.core.model.FontIds
+import app.clippr.core.model.TransformKeyframe
+import app.clippr.core.model.VisualEffects
+import app.clippr.core.model.VolumeKeyframe
 import app.clippr.core.model.ClipAudio
 import app.clippr.core.model.Crop
 import app.clippr.core.model.FitMode
@@ -119,8 +126,47 @@ object ProjectCodec {
                 "background" to json(s.backgroundArgb),
                 "bold" to json(s.bold),
                 "align" to json(s.alignment.name),
+                "font" to json(s.fontId),
+                "stroke" to json(finite(s.strokeWidth)),
+                "strokeColor" to json(s.strokeColorArgb),
+                "shadow" to json(s.shadow),
             )
         },
+        "keyframes" to if (c.keyframes.isEmpty()) null else jsonArray(c.keyframes.map(::encodeKeyframe)),
+        "volumeKeys" to if (c.volumeKeyframes.isEmpty()) null else jsonArray(
+            c.volumeKeyframes.map { jsonObject("t" to json(it.sourceUs), "v" to json(finite(it.volume)), "e" to json(it.easing.name)) },
+        ),
+        "color" to if (c.color == ColorGrade.NONE) null else encodeColor(c.color),
+        "effects" to if (c.effects == VisualEffects.NONE) null else jsonObject(
+            "blur" to json(finite(c.effects.blur)),
+            "vignette" to json(finite(c.effects.vignette)),
+            "grain" to json(finite(c.effects.grain)),
+            "fadeIn" to json(c.effects.fadeInUs),
+            "fadeOut" to json(c.effects.fadeOutUs),
+        ),
+    )
+
+    private fun encodeKeyframe(k: TransformKeyframe) = jsonObject(
+        "t" to json(k.sourceUs),
+        "x" to json(finite(k.positionX)),
+        "y" to json(finite(k.positionY)),
+        "s" to json(finite(k.scale)),
+        "r" to json(finite(k.rotationDegrees)),
+        "o" to json(finite(k.opacity)),
+        "e" to json(k.easing.name),
+    )
+
+    private fun encodeColor(g: ColorGrade) = jsonObject(
+        "exposure" to json(finite(g.exposure)),
+        "contrast" to json(finite(g.contrast)),
+        "highlights" to json(finite(g.highlights)),
+        "shadows" to json(finite(g.shadows)),
+        "saturation" to json(finite(g.saturation)),
+        "temperature" to json(finite(g.temperature)),
+        "tint" to json(finite(g.tint)),
+        "filter" to json(g.filter.name),
+        "filterStrength" to json(finite(g.filterStrength)),
+        "lut" to g.lutId?.let { json(it) },
     )
 
     private fun encodeTransform(t: Transform) = jsonObject(
@@ -220,10 +266,47 @@ object ProjectCodec {
                     backgroundArgb = it.int("background", 0),
                     bold = it.bool("bold", true),
                     alignment = enumOrNull<TextAlignment>(it.str("align")) ?: TextAlignment.CENTER,
+                    fontId = it.str("font") ?: FontIds.DEFAULT,
+                    strokeWidth = it.float("stroke"),
+                    strokeColorArgb = it.int("strokeColor", 0xFF101116.toInt()),
+                    shadow = it.bool("shadow"),
                 )
             },
+            keyframes = o.arr("keyframes").mapNotNull { (it as? JsonValue.Obj)?.let(::decodeKeyframe) }.sortedBy { it.sourceUs },
+            volumeKeyframes = o.arr("volumeKeys").mapNotNull { v ->
+                (v as? JsonValue.Obj)?.let {
+                    VolumeKeyframe(it.long("t"), it.float("v", 1f), enumOrNull<Easing>(it.str("e")) ?: Easing.LINEAR)
+                }
+            }.sortedBy { it.sourceUs },
+            color = o.obj("color")?.let(::decodeColor) ?: ColorGrade.NONE,
+            effects = o.obj("effects")?.let {
+                VisualEffects(it.float("blur"), it.float("vignette"), it.float("grain"), it.long("fadeIn"), it.long("fadeOut")).sanitized()
+            } ?: VisualEffects.NONE,
         )
     }
+
+    private fun decodeKeyframe(o: JsonValue.Obj) = TransformKeyframe(
+        sourceUs = o.long("t"),
+        positionX = o.float("x"),
+        positionY = o.float("y"),
+        scale = o.float("s", 1f),
+        rotationDegrees = o.float("r"),
+        opacity = o.float("o", 1f),
+        easing = enumOrNull<Easing>(o.str("e")) ?: Easing.EASE_IN_OUT,
+    )
+
+    private fun decodeColor(o: JsonValue.Obj) = ColorGrade(
+        exposure = o.float("exposure"),
+        contrast = o.float("contrast"),
+        highlights = o.float("highlights"),
+        shadows = o.float("shadows"),
+        saturation = o.float("saturation"),
+        temperature = o.float("temperature"),
+        tint = o.float("tint"),
+        filter = enumOrNull<FilterPreset>(o.str("filter")) ?: FilterPreset.NONE,
+        filterStrength = o.float("filterStrength", 1f),
+        lutId = o.str("lut"),
+    ).sanitized()
 
     private fun decodeTransform(o: JsonValue.Obj): Transform {
         val crop = o.obj("crop")
