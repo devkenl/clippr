@@ -68,3 +68,27 @@ object StyleEffects {
     fun remove(effects: VisualEffects, type: StyleEffectType): VisualEffects =
         effects.copy(styles = effects.styles.filterNot { it.type == type })
 }
+
+/**
+ * Removes a colour (usually a green or blue screen) so lower layers show through. [similarity]
+ * widens the range of keyed colours, [smoothness] softens the edge and [spill] removes the
+ * colour's tint from what remains. All in `0..1`.
+ */
+data class ChromaKey(
+    val colorArgb: Int = GREEN,
+    val similarity: Float = 0.4f,
+    val smoothness: Float = 0.1f,
+    val spill: Float = 0.5f,
+) {
+    fun sanitized() = copy(
+        colorArgb = colorArgb or (0xFF shl 24),
+        similarity = similarity.finiteOr(0.4f).coerceIn(0f, 1f),
+        smoothness = smoothness.finiteOr(0.1f).coerceIn(0f, 1f),
+        spill = spill.finiteOr(0.5f).coerceIn(0f, 1f),
+    )
+
+    companion object {
+        const val GREEN = 0xFF00B140.toInt()
+        const val BLUE = 0xFF0047BB.toInt()
+    }
+}

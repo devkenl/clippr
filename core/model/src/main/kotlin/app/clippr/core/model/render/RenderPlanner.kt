@@ -8,10 +8,11 @@ import app.clippr.core.model.TrackKind
 /**
  * Converts a [Project] into a [RenderPlan].
  *
- * Current renderer scope (documented in docs/ARCHITECTURE.md):
- * - One composited video lane: the main (first) video track. Additional video tracks are not
- *   created by the UI yet because multi-layer compositing is a later milestone.
- * - Any number of audio tracks, each mixed as its own lane.
+ * Renderer scope (documented in docs/ARCHITECTURE.md):
+ * - Every visible video track becomes a layer, top track on top. A track whose clips overlap
+ *   (transitions) is split into two alternating lanes so both clips can play during the overlap.
+ * - Any number of audio tracks, each mixed as its own lane. Video clips' sound crossfades during
+ *   transitions; hidden video tracks still contribute their sound.
  * - Text clips from all text tracks, drawn over the video.
  *
  * Clips whose asset is missing from the project are rendered as gaps, so a broken reference can
@@ -23,64 +24,79 @@ object RenderPlanner {
         val sequence = project.sequence
         val duration = sequence.durationUs
 
-        val videoTrack = sequence.mainVideoTrack
-        val video = ArrayList<VideoSegment>()
-        var cursor = 0L
-        if (videoTrack != null) {
-            for (clip in videoTrack.clips.sortedBy { it.timelineStartUs }) {
-                if (clip.timelineStartUs > cursor) video += VideoSegment.Gap(clip.timelineStartUs - cursor)
-                val asset = project.asset(clip.assetId)
-                video += if (asset == null) {
-                    VideoSegment.Gap(clip.durationUs)
-                } else {
-                    VideoSegment.Media(
-                        clipId = clip.id,
-                        asset = asset,
-                        sourceStartUs = clip.sourceStartUs,
-                        sourceEndUs = clip.sourceEndUs,
-                        durationUs = clip.durationUs,
-                        speed = clip.speed,
-                        transform = clip.transform,
-                        audio = if (videoTrack.muted || !asset.hasAudio) null else mixFor(clip),
-                        timelineStartUs = clip.timelineStartUs,
-                        keyframes = clip.keyframes,
-                        color = clip.color,
-                        effects = clip.effects,
-                    )
-                }
-                cursor = clip.timelineEndUs
+        val layers = ArrayList<VideoLayer>()
+        val hiddenAudio = ArrayList<List<AudioSegment>>()
+        for (track in sequence.videoTracks) {
+            val clips = track.clips.sortedBy { it.timelineStartUs }
+            if (clips.isEmpty()) continue
+            // Clips alternate between two lanes only where they overlap (transitions).
+            val lanes = IntArray(clips.size)
+            for (i in 1 until clips.size) {
+                lanes[i] = if (clips[i].timelineStartUs < clips[i - 1].timelineEndUs) 1 - lanes[i - 1] else 0
             }
-        }
-        if (cursor < duration) video += VideoSegment.Gap(duration - cursor)
-
-        val audioLanes = sequence.tracks
-            .filter { it.kind == TrackKind.AUDIO && !it.muted && it.clips.isNotEmpty() }
-            .mapNotNull { track ->
-                val lane = ArrayList<AudioSegment>()
-                var laneCursor = 0L
-                var hasSound = false
-                for (clip in track.clips.sortedBy { it.timelineStartUs }) {
-                    if (clip.timelineStartUs > laneCursor) lane += AudioSegment.Gap(clip.timelineStartUs - laneCursor)
+            if (track.hidden) {
+                // Hidden layers aren't drawn, but their clips' sound still plays.
+                for (lane in lanes.distinct()) {
+                    audioLane(project, clips.filterIndexed { i, _ -> lanes[i] == lane }, track.muted)?.let(hiddenAudio::add)
+                }
+                continue
+            }
+            val usedLanes = lanes.distinct().sortedDescending() // lane 1 is drawn above lane 0
+            for (lane in usedLanes) {
+                val segments = ArrayList<VideoSegment>()
+                var cursor = 0L
+                var hasMedia = false
+                clips.forEachIndexed { i, clip ->
+                    if (lanes[i] != lane) return@forEachIndexed
+                    if (clip.timelineStartUs > cursor) segments += VideoSegment.Gap(clip.timelineStartUs - cursor)
                     val asset = project.asset(clip.assetId)
-                    val mix = mixFor(clip)
-                    if (asset == null || mix == null || !asset.hasAudio) {
-                        lane += AudioSegment.Gap(clip.durationUs)
+                    val prev = clips.getOrNull(i - 1)
+                    val next = clips.getOrNull(i + 1)
+                    val overlapIn = if (prev != null) (prev.timelineEndUs - clip.timelineStartUs).coerceAtLeast(0) else 0L
+                    val overlapOut = if (next != null) (clip.timelineEndUs - next.timelineStartUs).coerceAtLeast(0) else 0L
+                    segments += if (asset == null) {
+                        VideoSegment.Gap(clip.durationUs)
                     } else {
-                        hasSound = true
-                        lane += AudioSegment.Media(
+                        hasMedia = true
+                        VideoSegment.Media(
                             clipId = clip.id,
                             asset = asset,
                             sourceStartUs = clip.sourceStartUs,
                             sourceEndUs = clip.sourceEndUs,
                             durationUs = clip.durationUs,
                             speed = clip.speed,
-                            mix = mix,
+                            transform = clip.transform,
+                            audio = if (track.muted || !asset.hasAudio) null else mixFor(clip, overlapIn, overlapOut),
+                            timelineStartUs = clip.timelineStartUs,
+                            keyframes = clip.keyframes,
+                            color = clip.color,
+                            effects = clip.effects,
+                            transitionIn = if (overlapIn > 0) {
+                                TransitionWindow(clip.timelineStartUs, clip.timelineStartUs + overlapIn, clip.transition, incomingOnTop = lane == 1)
+                            } else {
+                                null
+                            },
+                            transitionOut = if (overlapOut > 0 && next != null) {
+                                TransitionWindow(next.timelineStartUs, clip.timelineEndUs, next.transition, incomingOnTop = lanes[i + 1] == 1)
+                            } else {
+                                null
+                            },
                         )
                     }
-                    laneCursor = clip.timelineEndUs
+                    cursor = clip.timelineEndUs
                 }
-                if (hasSound) lane else null
+                if (cursor < duration) segments += VideoSegment.Gap(duration - cursor)
+                if (hasMedia) layers += VideoLayer(track.id, lane, segments)
             }
+        }
+        // There is always at least the base layer, even if it is all gap (e.g. titles only).
+        if (layers.isEmpty() && duration > 0) {
+            layers += VideoLayer(sequence.mainVideoTrack?.id ?: "base", 0, listOf(VideoSegment.Gap(duration)))
+        }
+
+        val audioLanes = sequence.tracks
+            .filter { it.kind == TrackKind.AUDIO && !it.muted && it.clips.isNotEmpty() }
+            .mapNotNull { track -> audioLane(project, track.clips.sortedBy { it.timelineStartUs }, muted = false) } + hiddenAudio
 
         val texts = sequence.tracks
             .filter { it.kind == TrackKind.TEXT }
@@ -106,21 +122,54 @@ object RenderPlanner {
             canvasHeight = canvasHeight,
             frameRate = project.settings.frameRate,
             durationUs = duration,
-            video = if (duration > 0) video else emptyList(),
+            layers = if (duration > 0) layers else emptyList(),
             audioLanes = if (duration > 0) audioLanes else emptyList(),
             texts = texts,
         )
     }
 
-    /** The clip's gain, or null if it is silent. Fades are shrunk to fit the clip. */
-    fun mixFor(clip: Clip): AudioMix? {
+    /** One audio lane from non-overlapping [clips], or null if none of them makes a sound. */
+    private fun audioLane(project: Project, clips: List<Clip>, muted: Boolean): List<AudioSegment>? {
+        if (muted) return null
+        val lane = ArrayList<AudioSegment>()
+        var laneCursor = 0L
+        var hasSound = false
+        for (clip in clips) {
+            if (clip.timelineStartUs > laneCursor) lane += AudioSegment.Gap(clip.timelineStartUs - laneCursor)
+            val asset = project.asset(clip.assetId)
+            val mix = mixFor(clip)
+            if (asset == null || mix == null || !asset.hasAudio) {
+                lane += AudioSegment.Gap(clip.durationUs)
+            } else {
+                hasSound = true
+                lane += AudioSegment.Media(
+                    clipId = clip.id,
+                    asset = asset,
+                    sourceStartUs = clip.sourceStartUs,
+                    sourceEndUs = clip.sourceEndUs,
+                    durationUs = clip.durationUs,
+                    speed = clip.speed,
+                    mix = mix,
+                )
+            }
+            laneCursor = clip.timelineEndUs
+        }
+        return if (hasSound) lane else null
+    }
+
+    /**
+     * The clip's gain, or null if it is silent. Fades are shrunk to fit the clip. During a
+     * transition ([transitionInUs], [transitionOutUs]) the sound crossfades too: the fade is at
+     * least as long as the overlap.
+     */
+    fun mixFor(clip: Clip, transitionInUs: Long = 0L, transitionOutUs: Long = 0L): AudioMix? {
         val audio: ClipAudio = clip.audio
         if (audio.muted) return null
         if (clip.volumeKeyframes.isEmpty() && audio.volume <= 0f) return null
         if (clip.volumeKeyframes.isNotEmpty() && clip.volumeKeyframes.all { it.volume <= 0f }) return null
         val duration = clip.durationUs
-        var fadeIn = audio.fadeInUs.coerceIn(0, duration)
-        var fadeOut = audio.fadeOutUs.coerceIn(0, duration)
+        var fadeIn = maxOf(audio.fadeInUs, transitionInUs).coerceIn(0, duration)
+        var fadeOut = maxOf(audio.fadeOutUs, transitionOutUs).coerceIn(0, duration)
         if (fadeIn + fadeOut > duration && fadeIn + fadeOut > 0) {
             val k = duration.toDouble() / (fadeIn + fadeOut)
             fadeIn = (fadeIn * k).toLong()

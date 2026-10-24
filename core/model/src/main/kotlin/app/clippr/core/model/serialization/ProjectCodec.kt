@@ -8,6 +8,9 @@ import app.clippr.core.model.FontIds
 import app.clippr.core.model.TransformKeyframe
 import app.clippr.core.model.VisualEffects
 import app.clippr.core.model.StyleEffect
+import app.clippr.core.model.ChromaKey
+import app.clippr.core.model.Transition
+import app.clippr.core.model.TransitionType
 import app.clippr.core.model.StyleEffectType
 import app.clippr.core.model.ProjectRepair
 import app.clippr.core.model.VolumeKeyframe
@@ -114,6 +117,7 @@ object ProjectCodec {
         "name" to json(t.name),
         "muted" to json(t.muted),
         "locked" to json(t.locked),
+        "hidden" to if (t.hidden) json(true) else null,
         "clips" to jsonArray(t.clips.map(::encodeClip)),
     )
 
@@ -159,6 +163,18 @@ object ProjectCodec {
             "styles" to if (c.effects.styles.isEmpty()) null else jsonArray(
                 c.effects.styles.map { jsonObject("type" to json(it.type.id), "amount" to json(finite(it.amount))) },
             ),
+            "chromaKey" to c.effects.chromaKey?.let { k ->
+                jsonObject(
+                    "color" to json(k.colorArgb),
+                    "similarity" to json(finite(k.similarity)),
+                    "smoothness" to json(finite(k.smoothness)),
+                    "spill" to json(finite(k.spill)),
+                )
+            },
+        ),
+        "transition" to if (c.transition == Transition.DEFAULT) null else jsonObject(
+            "type" to json(c.transition.type.id),
+            "easing" to json(c.transition.easing.name),
         ),
     )
 
@@ -252,6 +268,7 @@ object ProjectCodec {
             clips = o.arr("clips").mapNotNull { (it as? JsonValue.Obj)?.let { c -> decodeClip(c, dropped) } }.sortedBy { it.timelineStartUs },
             muted = o.bool("muted"),
             locked = o.bool("locked"),
+            hidden = o.bool("hidden") && kind == TrackKind.VIDEO,
         )
     }
 
@@ -318,8 +335,18 @@ object ProjectCodec {
                             StyleEffectType.fromId(e.str("type"))?.let { type -> StyleEffect(type, e.float("amount", type.defaultAmount)) }
                         }
                     },
+                    chromaKey = it.obj("chromaKey")?.let { k ->
+                        ChromaKey(k.int("color", ChromaKey.GREEN), k.float("similarity", 0.4f), k.float("smoothness", 0.1f), k.float("spill", 0.5f))
+                    },
                 ).sanitized()
             } ?: VisualEffects.NONE,
+            transition = o.obj("transition")?.let {
+                // Transitions from newer versions fall back to a cross dissolve.
+                Transition(
+                    TransitionType.fromId(it.str("type")) ?: TransitionType.CROSSFADE,
+                    enumOrNull<Easing>(it.str("easing")) ?: Easing.EASE_IN_OUT,
+                )
+            } ?: Transition.DEFAULT,
         )
     }
 

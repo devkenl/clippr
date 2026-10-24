@@ -35,6 +35,7 @@ import app.clippr.core.model.Animation
 import app.clippr.core.model.Clip
 import app.clippr.core.model.FitMode
 import app.clippr.core.model.StyleEffectType
+import app.clippr.core.model.TransitionMath
 import app.clippr.core.model.Transform
 import app.clippr.core.model.TransformKeyframe
 import app.clippr.core.model.render.Affine
@@ -58,8 +59,10 @@ import kotlin.random.Random
  * Per visual clip the effect chain is: Crop → Presentation (fit/fill into the canvas) → blur →
  * colour (all adjustments baked into one 3D LUT) → stylized shader effects (see
  * [ShaderEffects]) → canvas matrix (flip, scale, rotate, position; keyframed if animated) →
- * shake → vignette/grain overlays → opacity × fades. Opacity is applied as an
- * RGB scale, which is exact because the MVP composites a single video layer over black.
+ * shake → vignette/grain overlays → opacity × fades. With a single layer, opacity is an RGB
+ * scale (exact over black). With several layers (overlay tracks or transitions) every layer goes
+ * through Media3's compositor, and [LayerCompositor] applies opacity, fades and transition moves
+ * as real alpha and overlay transforms; wipes add a mask at the end of the chain.
  *
  * Effects receive composition-relative frame timestamps in both CompositionPlayer and
  * Transformer (verified in the Media3 1.11.1 sources), so animated effects subtract the clip's
@@ -70,18 +73,23 @@ object CompositionFactory {
 
     /** Returns null when the plan has nothing to render. */
     fun create(plan: RenderPlan, outputWidth: Int, outputHeight: Int, resources: RenderResources? = null): Composition? {
-        if (plan.isEmpty || plan.video.isEmpty()) return null
+        if (plan.isEmpty || plan.layers.isEmpty()) return null
         val fps = max(1, plan.frameRate.fps.roundToInt())
         val canvasAspect = outputWidth.toFloat() / outputHeight
+        val multi = plan.isMultiLayer
 
-        val videoSequence = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO))
-        for (segment in plan.video) {
-            when (segment) {
-                is VideoSegment.Gap -> videoSequence.addGap(segment.durationUs)
-                is VideoSegment.Media -> videoSequence.addItem(videoItem(segment, outputWidth, outputHeight, canvasAspect, fps, resources))
+        // One sequence per layer, top layer first: Media3 draws its first input on top.
+        val sequences = ArrayList<EditedMediaItemSequence>()
+        for (layer in plan.layers) {
+            val videoSequence = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_VIDEO, C.TRACK_TYPE_AUDIO))
+            for (segment in layer.segments) {
+                when (segment) {
+                    is VideoSegment.Gap -> videoSequence.addGap(segment.durationUs)
+                    is VideoSegment.Media -> videoSequence.addItem(videoItem(segment, outputWidth, outputHeight, canvasAspect, fps, resources, multi))
+                }
             }
+            sequences += videoSequence.build()
         }
-        val sequences = mutableListOf(videoSequence.build())
 
         for (lane in plan.audioLanes) {
             val builder = EditedMediaItemSequence.Builder(setOf(C.TRACK_TYPE_AUDIO))
@@ -101,9 +109,9 @@ object CompositionFactory {
             }
         }
 
-        return Composition.Builder(sequences)
-            .setEffects(Effects(emptyList(), compositionEffects))
-            .build()
+        val builder = Composition.Builder(sequences).setEffects(Effects(emptyList(), compositionEffects))
+        if (multi) builder.setVideoCompositorSettings(LayerCompositor(plan, outputWidth, outputHeight))
+        return builder.build()
     }
 
     private fun videoItem(
@@ -113,6 +121,8 @@ object CompositionFactory {
         canvasAspect: Float,
         fps: Int,
         resources: RenderResources?,
+        /** Several layers are composited: opacity goes through the compositor as real alpha. */
+        multi: Boolean,
     ): EditedMediaItem {
         val uri = Uri.parse(segment.asset.uri)
         val mediaItem = if (segment.isImage) {
@@ -137,6 +147,7 @@ object CompositionFactory {
                 FitMode.FILL -> Presentation.LAYOUT_SCALE_TO_FIT_WITH_CROP
             }
             add(Presentation.createForWidthAndHeight(outputWidth, outputHeight, layout))
+            fx.chromaKey?.let { add(ShaderEffects.chromaKey(it, composited = multi)) }
             if (fx.blur > 0f) add(GaussianBlur(max(0.5f, fx.blur * 22f * outputHeight / 1080f)))
             if (!segment.color.isIdentity && resources != null) {
                 add(SingleColorLut.createFromCube(resources.bakedLut(segment.color)))
@@ -160,7 +171,18 @@ object CompositionFactory {
                 if (fx.grain > 0f) add(GrainOverlay(outputWidth, outputHeight, fx.grain))
             }
             if (overlays.isNotEmpty()) add(OverlayEffect(overlays))
-            if (animated || fx.hasFades) {
+            if (multi) {
+                // Opacity, fades and transition looks are applied by LayerCompositor. Wipes (and
+                // slides seen from underneath) also need a mask on the clip itself.
+                segment.transitionIn?.let { w ->
+                    TransitionMath.mask(w.transition.type, isIncoming = true, incomingOnTop = w.incomingOnTop)
+                        ?.let { add(ShaderEffects.transitionMask(w, it)) }
+                }
+                segment.transitionOut?.let { w ->
+                    TransitionMath.mask(w.transition.type, isIncoming = false, incomingOnTop = w.incomingOnTop)
+                        ?.let { add(ShaderEffects.transitionMask(w, it)) }
+                }
+            } else if (animated || fx.hasFades) {
                 add(TimedOpacity(segment))
             } else if (transform.opacity < 1f) {
                 add(ConstantOpacity(transform.opacity))

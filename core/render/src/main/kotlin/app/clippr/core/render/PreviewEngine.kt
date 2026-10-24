@@ -9,6 +9,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.ExperimentalApi
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.effect.MultipleInputVideoGraph
 import androidx.media3.transformer.CompositionPlayer
 import app.clippr.core.model.Project
 import app.clippr.core.model.render.RenderPlanner
@@ -107,13 +108,25 @@ class PreviewEngine(context: Context) {
         }
     }
 
-    private fun obtainPlayer(): CompositionPlayer =
-        player ?: CompositionPlayer.Builder(appContext).build().also {
+    /** Whether the current player composites several layers (built with a multi-input graph). */
+    private var playerIsMultiLayer = false
+
+    private fun obtainPlayer(multiLayer: Boolean): CompositionPlayer {
+        player?.let { existing ->
+            if (playerIsMultiLayer == multiLayer) return existing
+            // Switching between one and several layers needs a different video graph.
+            releasePlayerOnly()
+        }
+        val builder = CompositionPlayer.Builder(appContext)
+        if (multiLayer) builder.setVideoGraphFactory(MultipleInputVideoGraph.Factory())
+        return builder.build().also {
             it.addListener(listener)
             it.volume = if (muted) 0f else 1f
             surfaceView?.let(it::setVideoSurfaceView)
             player = it
+            playerIsMultiLayer = multiLayer
         }
+    }
 
     fun attachSurface(view: SurfaceView) {
         surfaceView = view
@@ -151,8 +164,8 @@ class PreviewEngine(context: Context) {
             releasePlayerOnly()
             failed = false
         }
-        val p = obtainPlayer()
-        val wasPlaying = p.playWhenReady
+        val wasPlaying = player?.playWhenReady == true
+        val p = obtainPlayer(plan.isMultiLayer)
         val resumeAtUs = _state.value.positionUs.coerceIn(0, (plan.durationUs - 1).coerceAtLeast(0))
         try {
             p.setComposition(composition, resumeAtUs / 1000)

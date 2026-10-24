@@ -51,6 +51,8 @@ data class VisualEffects(
     val fadeOutUs: Long = 0L,
     /** Stylized shader effects, applied in order (see [StyleEffectType]). */
     val styles: List<StyleEffect> = emptyList(),
+    /** Green-screen keying; null when off. */
+    val chromaKey: ChromaKey? = null,
 ) {
     val hasFades: Boolean get() = fadeInUs > 0 || fadeOutUs > 0
 
@@ -62,6 +64,7 @@ data class VisualEffects(
         fadeOutUs = fadeOutUs.coerceAtLeast(0),
         // One instance per type; later duplicates are dropped.
         styles = styles.distinctBy { it.type }.map { it.sanitized() },
+        chromaKey = chromaKey?.sanitized(),
     )
 
     companion object {

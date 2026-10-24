@@ -40,7 +40,7 @@ class RandomEditInvariantTest {
             val clips = p.sequence.allClips
             val anyClip = clips.randomOrNull(rnd)
             val t = rnd.nextLong(0, 40 * SEC)
-            val command: EditCommand? = when (rnd.nextInt(13)) {
+            val command: EditCommand? = when (rnd.nextInt(14)) {
                 0, 1 -> AddAssetClip(assets.random(rnd).id, id(), startUs = if (rnd.nextBoolean()) t else null)
                 2 -> anyClip?.let { c ->
                     val target = p.sequence.tracks.random(rnd)
@@ -73,9 +73,13 @@ class RandomEditInvariantTest {
                         }
                     }
                 }
-                10 -> if (rnd.nextBoolean()) AddTrack(TrackKind.AUDIO, id()) else {
-                    p.sequence.tracks.random(rnd).let { SetTrackLocked(it.id, rnd.nextInt(4) == 0) }
+                10 -> when (rnd.nextInt(4)) {
+                    0 -> AddTrack(TrackKind.AUDIO, id())
+                    1 -> AddTrack(TrackKind.VIDEO, id())
+                    2 -> p.sequence.videoTracks.random(rnd).let { SetTrackHidden(it.id, rnd.nextBoolean()) }
+                    else -> p.sequence.tracks.random(rnd).let { SetTrackLocked(it.id, rnd.nextInt(4) == 0) }
                 }
+                12 -> anyClip?.let { SetTransitionDuration(it.id, rnd.nextLong(-SEC, 4 * SEC)) }
                 else -> if (history.canUndo && rnd.nextInt(3) == 0) {
                     history.undo(); null
                 } else {
@@ -95,6 +99,7 @@ class RandomEditInvariantTest {
         assertTrue(problems.isEmpty(), "$context: $problems")
         val plan = RenderPlanner.plan(p)
         assertEquals(p.durationUs, plan.video.sumOf { it.durationUs }, context)
+        for (layer in plan.layers) assertEquals(p.durationUs, layer.segments.sumOf { it.durationUs }, "$context: layer ${layer.trackId}")
         for (lane in plan.audioLanes) {
             assertTrue(lane.sumOf { it.durationUs } <= plan.durationUs, "$context: audio lane longer than timeline")
         }

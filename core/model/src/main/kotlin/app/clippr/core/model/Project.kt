@@ -128,8 +128,14 @@ data class TimelineSequence(val tracks: List<Track>) {
 
     val allClips: List<Clip> get() = tracks.flatMap { it.clips }
 
-    /** The primary video track, which the MVP renderer composites. */
-    val mainVideoTrack: Track? get() = tracks.firstOrNull { it.kind == TrackKind.VIDEO }
+    /**
+     * The main (bottom) video layer. Tracks are listed top to bottom and new video tracks are
+     * added above it, so it is the last video track.
+     */
+    val mainVideoTrack: Track? get() = tracks.lastOrNull { it.kind == TrackKind.VIDEO }
+
+    /** Video tracks from the top layer down to the main one. */
+    val videoTracks: List<Track> get() = tracks.filter { it.kind == TrackKind.VIDEO }
 
     fun replaceTrack(track: Track): TimelineSequence =
         copy(tracks = tracks.map { if (it.id == track.id) track else it })
@@ -161,8 +167,13 @@ data class Track(
     val clips: List<Clip> = emptyList(),
     val muted: Boolean = false,
     val locked: Boolean = false,
+    /** Video tracks only: hidden layers are not drawn (their audio still plays unless muted). */
+    val hidden: Boolean = false,
 ) {
     val endUs: Long get() = clips.maxOfOrNull { it.timelineEndUs } ?: 0L
+
+    /** Whether clips may overlap on this track (video tracks: overlaps are transitions). */
+    val allowsOverlap: Boolean get() = kind == TrackKind.VIDEO
 
     fun accepts(type: MediaType?): Boolean = when (kind) {
         TrackKind.VIDEO -> type == MediaType.VIDEO || type == MediaType.IMAGE
@@ -170,8 +181,9 @@ data class Track(
         TrackKind.TEXT -> type == null
     }
 
+    /** The clip at [timeUs]; during a transition, the incoming (later) clip. */
     fun clipAt(timeUs: Long): Clip? =
-        clips.firstOrNull { timeUs >= it.timelineStartUs && timeUs < it.timelineEndUs }
+        clips.lastOrNull { timeUs >= it.timelineStartUs && timeUs < it.timelineEndUs }
 
     fun withClips(newClips: List<Clip>): Track = copy(clips = newClips.sortedBy { it.timelineStartUs })
 }
@@ -200,6 +212,8 @@ data class Clip(
     val volumeKeyframes: List<VolumeKeyframe> = emptyList(),
     val color: ColorGrade = ColorGrade.NONE,
     val effects: VisualEffects = VisualEffects.NONE,
+    /** How this clip enters when it overlaps the previous clip on a video track. */
+    val transition: Transition = Transition.DEFAULT,
 ) {
     init {
         require(sourceEndUs > sourceStartUs) { "Clip $id has empty source range" }

@@ -13,7 +13,12 @@ import androidx.media3.effect.BaseGlShaderProgram
 import androidx.media3.effect.GlEffect
 import androidx.media3.effect.GlShaderProgram
 import androidx.media3.effect.MatrixTransformation
+import app.clippr.core.model.ChromaKey
+import app.clippr.core.model.MaskShape
 import app.clippr.core.model.StyleEffect
+import app.clippr.core.model.TransitionMask
+import app.clippr.core.model.TransitionMath
+import app.clippr.core.model.render.TransitionWindow
 import app.clippr.core.model.StyleEffectType
 import kotlin.math.sin
 
@@ -37,6 +42,105 @@ internal object ShaderEffects {
             else -> StyleShaderEffect(fragmentFor(style.type), style.amount, clipStartUs)
         }
     }
+
+    /**
+     * Hides part of a clip during a wipe-like transition (see [TransitionMath.mask]). The edge is
+     * softened over a few reference pixels.
+     */
+    fun transitionMask(window: TransitionWindow, mask: TransitionMask): androidx.media3.common.Effect {
+        val shape = when (mask.shape) {
+            MaskShape.LEFT -> 0f
+            MaskShape.RIGHT -> 1f
+            MaskShape.UP -> 2f
+            MaskShape.DOWN -> 3f
+            MaskShape.CIRCLE -> 4f
+        }
+        return StyleShaderEffect(
+            MASK_FRAGMENT,
+            amount = 1f,
+            clipStartUs = 0L,
+            uniforms = mapOf("uShape" to floatArrayOf(shape), "uInvert" to floatArrayOf(if (mask.invert) 1f else 0f)),
+            perFrame = { t -> mapOf("uProgress" to floatArrayOf(TransitionMath.progress(window.transition, window.startUs, window.endUs, t))) },
+        )
+    }
+
+    /**
+     * Green/blue-screen key. With [composited] the keyed areas become transparent for the layers
+     * beneath; on a single layer they turn black instead (there is nothing underneath).
+     */
+    fun chromaKey(key: ChromaKey, composited: Boolean): androidx.media3.common.Effect {
+        val r = ((key.colorArgb shr 16) and 0xFF) / 255f
+        val g = ((key.colorArgb shr 8) and 0xFF) / 255f
+        val b = (key.colorArgb and 0xFF) / 255f
+        return StyleShaderEffect(
+            CHROMA_FRAGMENT,
+            amount = 1f,
+            clipStartUs = 0L,
+            uniforms = mapOf(
+                "uKey" to floatArrayOf(r, g, b),
+                "uSimilarity" to floatArrayOf(key.similarity),
+                "uSmoothness" to floatArrayOf(key.smoothness),
+                "uSpill" to floatArrayOf(key.spill),
+                "uComposited" to floatArrayOf(if (composited) 1f else 0f),
+            ),
+        )
+    }
+
+    internal const val MASK_FRAGMENT: String = HEADER + """
+uniform float uProgress;
+uniform float uShape;
+uniform float uInvert;
+void main() {
+  vec2 uv = vTexSamplingCoord;
+  vec4 c = tex(uv);
+  float p = uProgress;
+  float soft = uUnit.y * 3.0;
+  float r;
+  if (uShape < 0.5) {
+    r = smoothstep(1.0 - p - soft, 1.0 - p + soft, uv.x);
+  } else if (uShape < 1.5) {
+    r = 1.0 - smoothstep(p - soft, p + soft, uv.x);
+  } else if (uShape < 2.5) {
+    r = 1.0 - smoothstep(p - soft, p + soft, uv.y);
+  } else if (uShape < 3.5) {
+    r = smoothstep(1.0 - p - soft, 1.0 - p + soft, uv.y);
+  } else {
+    vec2 d = vec2((uv.x - 0.5) * uAspect, uv.y - 0.5);
+    float maxR = sqrt(uAspect * uAspect * 0.25 + 0.25);
+    r = 1.0 - smoothstep(p * maxR - soft, p * maxR + soft, length(d));
+  }
+  // At the very end of a reveal everything is shown, and at the start nothing.
+  if (p >= 1.0) r = 1.0;
+  if (p <= 0.0) r = 0.0;
+  float a = mix(r, 1.0 - r, uInvert);
+  gl_FragColor = vec4(c.rgb, c.a * a);
+}"""
+
+    internal const val CHROMA_FRAGMENT: String = HEADER + """
+uniform vec3 uKey;
+uniform float uSimilarity;
+uniform float uSmoothness;
+uniform float uSpill;
+uniform float uComposited;
+vec2 chroma(vec3 c) {
+  float y = luma(c);
+  return vec2((c.b - y) * 0.565, (c.r - y) * 0.713);
+}
+void main() {
+  vec4 c = tex(vTexSamplingCoord);
+  float d = distance(chroma(c.rgb), chroma(uKey));
+  float sim = mix(0.03, 0.4, uSimilarity);
+  float soft = mix(0.005, 0.2, uSmoothness);
+  float a = smoothstep(sim, sim + soft, d);
+  // Remove the key colour's tint from edges and reflections.
+  float spill = (1.0 - smoothstep(sim, sim + soft + 0.15, d)) * uSpill;
+  vec3 rgb = mix(c.rgb, vec3(luma(c.rgb)), spill);
+  if (uComposited > 0.5) {
+    gl_FragColor = vec4(rgb, c.a * a);
+  } else {
+    gl_FragColor = vec4(rgb * a, c.a);
+  }
+}"""
 
     private const val HEADER = """#version 100
 #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -223,9 +327,13 @@ internal class StyleShaderEffect(
     private val fragment: String,
     private val amount: Float,
     private val clipStartUs: Long,
+    /** Extra constant uniforms (float or vec2/3/4). */
+    private val uniforms: Map<String, FloatArray> = emptyMap(),
+    /** Uniforms that change every frame, from the frame time. */
+    private val perFrame: ((presentationTimeUs: Long) -> Map<String, FloatArray>)? = null,
 ) : GlEffect {
     override fun toGlShaderProgram(context: Context, useHdr: Boolean): GlShaderProgram =
-        StyleShaderProgram(fragment, amount, clipStartUs, useHdr)
+        StyleShaderProgram(fragment, amount, clipStartUs, useHdr, uniforms, perFrame)
 }
 
 @OptIn(UnstableApi::class)
@@ -234,6 +342,8 @@ internal class StyleShaderProgram(
     amount: Float,
     private val clipStartUs: Long,
     useHdr: Boolean,
+    uniforms: Map<String, FloatArray> = emptyMap(),
+    private val perFrame: ((Long) -> Map<String, FloatArray>)? = null,
 ) : BaseGlShaderProgram(/* useHighPrecisionColorComponents= */ useHdr, /* texturePoolCapacity= */ 1) {
 
     private val program: GlProgram = try {
@@ -248,6 +358,7 @@ internal class StyleShaderProgram(
         program.setFloatsUniform("uTransformationMatrix", identity)
         program.setFloatsUniform("uTexTransformationMatrix", identity)
         program.setFloatsUniformIfPresent("uAmount", floatArrayOf(amount.coerceIn(0f, 1f)))
+        uniforms.forEach { (name, value) -> program.setFloatsUniformIfPresent(name, value) }
     }
 
     override fun configure(inputWidth: Int, inputHeight: Int): Size {
@@ -265,6 +376,7 @@ internal class StyleShaderProgram(
             program.setSamplerTexIdUniform("uTexSampler", inputTexId, /* texUnitIndex= */ 0)
             val seconds = ((presentationTimeUs - clipStartUs).coerceAtLeast(0) / 1_000_000.0).toFloat()
             program.setFloatsUniformIfPresent("uTime", floatArrayOf(seconds))
+            perFrame?.invoke(presentationTimeUs)?.forEach { (name, value) -> program.setFloatsUniformIfPresent(name, value) }
             program.bindAttributesAndUniforms()
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
         } catch (e: GlUtil.GlException) {

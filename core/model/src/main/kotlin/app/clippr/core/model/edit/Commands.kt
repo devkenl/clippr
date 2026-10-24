@@ -11,6 +11,7 @@ import app.clippr.core.model.TextStyle
 import app.clippr.core.model.finiteOr
 import app.clippr.core.model.Track
 import app.clippr.core.model.TrackKind
+import app.clippr.core.model.Transition
 import app.clippr.core.model.time.US_PER_SECOND
 
 /** Default timeline duration given to still images and new text clips. */
@@ -21,6 +22,12 @@ const val DEFAULT_STILL_DURATION_US: Long = 3L * US_PER_SECOND
 // ---------------------------------------------------------------------------------------------
 
 private fun Project.withTrack(track: Track): Project = copy(sequence = sequence.replaceTrack(track))
+
+/** [clips] on this track if they follow the overlap rules, otherwise null (the edit is refused). */
+private fun Track.validated(clips: List<Clip>): Track? {
+    val sorted = clips.sortedBy { it.timelineStartUs }
+    return if (Overlaps.isValid(sorted, allowsOverlap)) withClips(sorted) else null
+}
 
 /** Applies [block] to the unlocked track containing [clipId]; no-op otherwise. */
 private inline fun Project.editClipTrack(clipId: String, block: (Track, Clip) -> Track?): Project {
@@ -95,9 +102,15 @@ data class AddTrack(val kind: TrackKind, val trackId: String) : EditCommand {
             TrackKind.TEXT -> "Text $count"
         }
         val newTrack = Track(trackId, kind, name)
-        // Keep tracks grouped: text on top, then video, then audio.
+        // Keep tracks grouped: text on top, then video, then audio. A new video track becomes the
+        // top video layer (tracks are listed top to bottom, like the layers they draw).
         val order = listOf(TrackKind.TEXT, TrackKind.VIDEO, TrackKind.AUDIO)
-        val insertAt = tracks.indexOfLast { order.indexOf(it.kind) <= order.indexOf(kind) } + 1
+        val firstVideo = tracks.indexOfFirst { it.kind == TrackKind.VIDEO }
+        val insertAt = if (kind == TrackKind.VIDEO && firstVideo >= 0) {
+            firstVideo
+        } else {
+            tracks.indexOfLast { order.indexOf(it.kind) <= order.indexOf(kind) } + 1
+        }
         val newTracks = tracks.toMutableList().apply { add(insertAt, newTrack) }
         return project.copy(sequence = project.sequence.copy(tracks = newTracks))
     }
@@ -123,6 +136,15 @@ data class SetTrackMuted(val trackId: String, val muted: Boolean) : EditCommand 
     override fun apply(project: Project): Project {
         val track = project.sequence.track(trackId) ?: return project
         return project.withTrack(track.copy(muted = muted))
+    }
+}
+
+data class SetTrackHidden(val trackId: String, val hidden: Boolean) : EditCommand {
+    override val label = if (hidden) "Hide layer" else "Show layer"
+    override fun apply(project: Project): Project {
+        val track = project.sequence.track(trackId) ?: return project
+        if (track.kind != TrackKind.VIDEO) return project
+        return project.withTrack(track.copy(hidden = hidden))
     }
 }
 
@@ -169,7 +191,7 @@ data class AddAssetClip(
             sourceStartUs = 0,
             sourceEndUs = sourceEnd,
         )
-        val placed = Placement.place(track.clips, clip, startUs ?: track.endUs)
+        val placed = Placement.place(track.clips, clip, startUs ?: track.endUs, track.allowsOverlap)
         return project.withTrack(track.withClips(placed.clips))
     }
 }
@@ -220,11 +242,11 @@ data class MoveClip(val clipId: String, val targetTrackId: String, val startUs: 
             return project
         }
         return if (source.id == target.id) {
-            val placed = Placement.place(source.clips.filter { it.id != clipId }, clip, startUs)
+            val placed = Placement.place(source.clips.filter { it.id != clipId }, clip, startUs, target.allowsOverlap)
             project.withTrack(source.withClips(placed.clips))
         } else {
             val newSource = source.withClips(source.clips.filter { it.id != clipId })
-            val placed = Placement.place(target.clips, clip, startUs)
+            val placed = Placement.place(target.clips, clip, startUs, target.allowsOverlap)
             project.withTrack(newSource).withTrack(target.withClips(placed.clips))
         }
     }
@@ -239,9 +261,20 @@ data class TrimClipStart(val clipId: String, val newStartUs: Long) : EditCommand
     override val label = "Trim clip"
     override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
         val index = track.clips.indexOf(clip)
-        val prevEnd = if (index > 0) track.clips[index - 1].timelineEndUs else 0L
+        val prev = track.clips.getOrNull(index - 1)
         val end = clip.timelineEndUs
-        val minDuration = project.minClipDurationUs()
+        // On video tracks the start may extend over the previous clip: the overlap is the
+        // transition, limited to half of either clip (Overlaps).
+        val prevEnd = when {
+            prev == null -> 0L
+            track.allowsOverlap -> maxOf(
+                prev.timelineEndUs - prev.durationUs / 2,
+                2 * prev.timelineEndUs - end,
+                prev.timelineStartUs + 1,
+            ).coerceAtMost(prev.timelineEndUs)
+            else -> prev.timelineEndUs
+        }
+        val minDuration = maxOf(project.minClipDurationUs(), 2 * Overlaps.overlapOut(track.clips, index))
         val bounded = project.isBounded(clip)
         // Earliest start allowed by the source: the clip can extend left until source time 0.
         val earliestBySource = if (bounded) {
@@ -273,7 +306,7 @@ data class TrimClipStart(val clipId: String, val newStartUs: Long) : EditCommand
             }
             clip.copy(timelineStartUs = start, sourceStartUs = 0, sourceEndUs = sourceDuration)
         }
-        track.withClips(track.clips.map { if (it.id == clipId) updated else it })
+        track.validated(track.clips.map { if (it.id == clipId) updated else it })
     }
 }
 
@@ -282,8 +315,18 @@ data class TrimClipEnd(val clipId: String, val newEndUs: Long) : EditCommand {
     override val label = "Trim clip"
     override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
         val index = track.clips.indexOf(clip)
-        val nextStart = if (index < track.clips.lastIndex) track.clips[index + 1].timelineStartUs else Long.MAX_VALUE
-        val minDuration = project.minClipDurationUs()
+        val next = track.clips.getOrNull(index + 1)
+        // On video tracks the end may extend over the next clip, forming a transition.
+        val nextStart = when {
+            next == null -> Long.MAX_VALUE
+            track.allowsOverlap -> minOf(
+                next.timelineStartUs + next.durationUs / 2,
+                2 * next.timelineStartUs - clip.timelineStartUs,
+                next.timelineEndUs - 1,
+            ).coerceAtLeast(next.timelineStartUs)
+            else -> next.timelineStartUs
+        }
+        val minDuration = maxOf(project.minClipDurationUs(), 2 * Overlaps.overlapIn(track.clips, index))
         val limit = project.sourceLimitUs(clip)
         val latestBySource = if (limit == Long.MAX_VALUE) {
             Long.MAX_VALUE
@@ -305,7 +348,7 @@ data class TrimClipEnd(val clipId: String, val newEndUs: Long) : EditCommand {
         }
         if (newSourceEnd <= clip.sourceStartUs) return@editClipTrack null
         val updated = clip.copy(sourceEndUs = newSourceEnd)
-        track.withClips(track.clips.map { if (it.id == clipId) updated else it })
+        track.validated(track.clips.map { if (it.id == clipId) updated else it })
     }
 }
 
@@ -319,6 +362,10 @@ data class SplitClip(val clipId: String, val atUs: Long, val newClipId: String) 
     override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
         if (project.sequence.clip(newClipId) != null) return@editClipTrack null
         val minDuration = project.minClipDurationUs()
+        val index = track.clips.indexOf(clip)
+        // Splitting inside a transition would leave three clips overlapping.
+        if (atUs < clip.timelineStartUs + Overlaps.overlapIn(track.clips, index)) return@editClipTrack null
+        if (atUs > clip.timelineEndUs - Overlaps.overlapOut(track.clips, index)) return@editClipTrack null
         val leftDuration = atUs - clip.timelineStartUs
         if (leftDuration < minDuration || clip.timelineEndUs - atUs < minDuration) return@editClipTrack null
         val nominal = clip.sourceStartUs + Clip.sourceDurationFor(leftDuration, clip.speed)
@@ -334,13 +381,14 @@ data class SplitClip(val clipId: String, val atUs: Long, val newClipId: String) 
                     timelineStartUs = left.timelineEndUs,
                     sourceStartUs = splitSource,
                     audio = clip.audio.copy(fadeInUs = 0),
+                    transition = Transition.DEFAULT,
                 )
                 left to right
             }
             .firstOrNull { (_, right) -> right.timelineEndUs <= clip.timelineEndUs }
             ?: return@editClipTrack null
         val (left, right) = parts
-        track.withClips(track.clips.flatMap { if (it.id == clipId) listOf(left, right) else listOf(it) })
+        track.validated(track.clips.flatMap { if (it.id == clipId) listOf(left, right) else listOf(it) })
     }
 }
 
@@ -362,15 +410,18 @@ data class DeleteClips(val clipIds: Set<String>, val ripple: Boolean = false) : 
             changed = true
             if (!ripple) return@map track.withClips(track.clips.filter { it.id !in clipIds })
             var shift = 0L
+            var previousEnd = Long.MIN_VALUE
             val kept = ArrayList<Clip>()
             for (clip in track.clips.sortedBy { it.timelineStartUs }) {
                 if (clip.id in clipIds) {
-                    shift += clip.durationUs
+                    // Close only the time this clip had to itself (not its transitions).
+                    shift += (clip.timelineEndUs - maxOf(clip.timelineStartUs, previousEnd)).coerceAtLeast(0)
                 } else {
                     kept += if (shift == 0L) clip else clip.copy(timelineStartUs = (clip.timelineStartUs - shift).coerceAtLeast(0))
                 }
+                previousEnd = maxOf(previousEnd, clip.timelineEndUs)
             }
-            track.withClips(kept)
+            track.withClips(Overlaps.normalize(kept, track.allowsOverlap))
         }
         return if (changed) project.copy(sequence = project.sequence.copy(tracks = tracks)) else project
     }
@@ -398,6 +449,7 @@ class UpdateClip(
                 .distinctBy { it.sourceUs },
             color = if (clip.isText) ColorGrade.NONE else proposed.color.sanitized(),
             effects = proposed.effects.sanitized(),
+            transition = proposed.transition,
         )
         if (updated == clip) return@editClipTrack null
         track.withClips(track.clips.map { if (it.id == clipId) updated else it })
@@ -416,8 +468,8 @@ data class SetClipSpeed(val clipId: String, val speed: Float) : EditCommand {
         if (s == clip.speed) return@editClipTrack null
         val updated = clip.copy(speed = s)
         if (updated.durationUs < project.minClipDurationUs()) return@editClipTrack null
-        val placed = Placement.place(track.clips.filter { it.id != clipId }, updated, clip.timelineStartUs)
-        track.withClips(placed.clips)
+        val placed = Placement.place(track.clips.filter { it.id != clipId }, updated, clip.timelineStartUs, track.allowsOverlap)
+        track.validated(placed.clips)
     }
 
     companion object {
@@ -431,8 +483,31 @@ data class DuplicateClip(val clipId: String, val newClipId: String) : EditComman
     override val label = "Duplicate clip"
     override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
         if (project.sequence.clip(newClipId) != null) return@editClipTrack null
-        val copy = clip.copy(id = newClipId)
-        track.withClips(Placement.place(track.clips, copy, clip.timelineEndUs).clips)
+        val copy = clip.copy(id = newClipId, transition = Transition.DEFAULT)
+        track.validated(Placement.place(track.clips, copy, clip.timelineEndUs, track.allowsOverlap).clips)
+    }
+}
+
+/**
+ * Sets how long the transition into [clipId] is (its overlap with the previous clip on a video
+ * track). The clip and every later clip on the track move together, so their own transitions
+ * and spacing are kept. 0 removes the transition. Works from a cut or a gap too: the clip moves
+ * left until it overlaps by [durationUs].
+ */
+data class SetTransitionDuration(val clipId: String, val durationUs: Long) : EditCommand {
+    override val label = if (durationUs <= 0) "Remove transition" else "Transition length"
+    override fun apply(project: Project): Project = project.editClipTrack(clipId) { track, clip ->
+        if (!track.allowsOverlap) return@editClipTrack null
+        val index = track.clips.indexOf(clip)
+        val prev = track.clips.getOrNull(index - 1) ?: return@editClipTrack null
+        val prevIncoming = Overlaps.overlapIn(track.clips, index - 1)
+        val limit = minOf(Overlaps.maxOverlap(prev, clip), prev.durationUs - prevIncoming - 1, clip.durationUs / 2 - Overlaps.overlapOut(track.clips, index).coerceAtMost(clip.durationUs / 2))
+        val d = durationUs.coerceIn(0, limit.coerceAtLeast(0))
+        val newStart = prev.timelineEndUs - d
+        val delta = newStart - clip.timelineStartUs
+        if (delta == 0L) return@editClipTrack null
+        val moved = track.clips.mapIndexed { i, c -> if (i >= index) c.copy(timelineStartUs = (c.timelineStartUs + delta).coerceAtLeast(0)) else c }
+        track.validated(moved)
     }
 }
 

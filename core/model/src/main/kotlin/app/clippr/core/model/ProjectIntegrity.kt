@@ -16,10 +16,13 @@ object ProjectIntegrity {
             if (!trackIds.add(track.id)) issues += "Duplicate track id ${track.id}"
             var prevEnd = 0L
             var prevStart = -1L
+            if (track.allowsOverlap && !app.clippr.core.model.edit.Overlaps.isValid(track.clips, allowOverlap = true)) {
+                issues += "Invalid transition overlap on ${track.id}"
+            }
             for (clip in track.clips) {
                 if (!clipIds.add(clip.id)) issues += "Duplicate clip id ${clip.id}"
                 if (clip.timelineStartUs < prevStart) issues += "Clips out of order on ${track.id}"
-                if (clip.timelineStartUs < prevEnd) issues += "Clip ${clip.id} overlaps previous clip on ${track.id}"
+                if (!track.allowsOverlap && clip.timelineStartUs < prevEnd) issues += "Clip ${clip.id} overlaps previous clip on ${track.id}"
                 prevEnd = clip.timelineEndUs
                 prevStart = clip.timelineStartUs
                 when (track.kind) {
