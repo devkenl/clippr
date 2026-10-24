@@ -17,6 +17,19 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+/** A finished export, handed to the app so it can appear under "Recent exports". */
+data class ExportedVideo(
+    val projectId: String,
+    val projectName: String,
+    val uri: Uri,
+    val displayName: String,
+    val width: Int,
+    val height: Int,
+    val frameRate: app.clippr.core.model.time.FrameRate,
+    val durationUs: Long,
+    val sizeBytes: Long,
+)
+
 /** The overall export job as shown to the user, including saving to the gallery. */
 sealed interface ExportJob {
     data object Idle : ExportJob
@@ -37,12 +50,15 @@ class ExportCoordinator(
     private val engine: ExportEngine,
     private val library: VideoLibrary,
     private val appScope: CoroutineScope,
+    /** Called after a successful export, e.g. to record it in the export history. */
+    private val onExported: suspend (ExportedVideo) -> Unit = {},
 ) {
     private val _job = MutableStateFlow<ExportJob>(ExportJob.Idle)
     val job: StateFlow<ExportJob> = _job.asStateFlow()
 
     private var projectId: String? = null
     private var displayName: String = ""
+    private var pending: ExportedVideo? = null
 
     init {
         appScope.launch {
@@ -58,6 +74,9 @@ class ExportCoordinator(
                         try {
                             val uri = library.publish(state.file, displayName)
                             _job.value = ExportJob.Done(id, uri, displayName, state.sizeBytes, state.elapsedMs)
+                            pending?.let { info ->
+                                runCatching { onExported(info.copy(uri = uri, displayName = displayName, sizeBytes = state.sizeBytes)) }
+                            }
                         } catch (e: Exception) {
                             _job.value = ExportJob.Failed(id, "Rendered, but saving to the gallery failed: ${e.message}")
                         } finally {
@@ -78,6 +97,8 @@ class ExportCoordinator(
         val safeName = project.name.replace(Regex("[^A-Za-z0-9 _-]"), "").trim().ifEmpty { "Clippr" }.take(48)
         displayName = "$safeName-$stamp.mp4"
         val out = File(File(context.cacheDir, "exports"), displayName)
+        val (w, h) = settings.outputSize(project.settings)
+        pending = ExportedVideo(project.id, project.name, Uri.EMPTY, displayName, w, h, settings.frameRate, project.durationUs, 0L)
         _job.value = ExportJob.Rendering(project.id, null, 0)
         engine.start(project, settings, out)
     }

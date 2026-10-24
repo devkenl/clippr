@@ -41,6 +41,15 @@ class VideoLibrary(private val context: Context) {
         }
     }
 
+    /** Whether the exported video still exists (the user may have deleted it in the gallery). */
+    suspend fun exists(uri: Uri): Boolean = withContext(Dispatchers.IO) {
+        try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     fun shareIntent(uri: Uri, title: String): Intent {
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "video/mp4"

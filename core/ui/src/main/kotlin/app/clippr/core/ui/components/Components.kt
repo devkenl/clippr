@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -369,6 +371,56 @@ fun <T> SegmentedChoice(
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * A row of pill tabs (selected tab on a raised pill), scrollable when it doesn't fit. Used for
+ * the inspector tabs and the Home navigation.
+ */
+@Composable
+fun PillTabs(
+    tabs: List<String>,
+    selected: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    icons: List<ImageVector?> = emptyList(),
+    compact: Boolean = false,
+) {
+    val c = palette
+    Row(
+        modifier
+            .horizontalScroll(rememberScrollState())
+            .clip(RoundedCornerShape(50))
+            .background(c.surface)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        tabs.forEachIndexed { i, label ->
+            val isSelected = i == selected
+            Row(
+                Modifier
+                    .heightIn(min = if (compact) 34.dp else 40.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(if (isSelected) c.panelHigh else Color.Transparent)
+                    .clickable(role = Role.Tab, onClickLabel = label) { onSelect(i) }
+                    .padding(horizontal = if (compact) 12.dp else 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                icons.getOrNull(i)?.let {
+                    Icon(it, contentDescription = null, tint = if (isSelected) c.accent else c.textSecondary, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (isSelected) c.textPrimary else c.textSecondary,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
                 )
             }
         }

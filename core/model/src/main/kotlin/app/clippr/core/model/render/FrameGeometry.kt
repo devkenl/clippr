@@ -80,7 +80,7 @@ data class ClipFrame(
  * Rendering model for a visual clip, in order:
  * 1. Crop the source by [Crop] fractions.
  * 2. Fit (letterbox) or fill (crop to canvas aspect) the result into the canvas.
- * 3. Scale about the canvas centre, rotate clockwise, then translate by the normalized position.
+ * 3. Flip, scale about the canvas centre, rotate clockwise, then translate by the normalized position.
  */
 object FrameGeometry {
 
@@ -92,11 +92,14 @@ object FrameGeometry {
     fun ndcMatrix(transform: Transform, canvasAspect: Float): Affine {
         if (transform.isIdentityPlacement) return Affine.IDENTITY
         val s = transform.scale
+        // Flips mirror the frame about its own centre, before rotation and positioning.
+        val fx = if (transform.flipHorizontal) -1f else 1f
+        val fy = if (transform.flipVertical) -1f else 1f
         return Affine.translate(transform.positionX, transform.positionY) *
             Affine.scale(1f / canvasAspect, 1f) *
             Affine.rotateCcw(-transform.rotationDegrees) *
             Affine.scale(canvasAspect, 1f) *
-            Affine.scale(s, s)
+            Affine.scale(s * fx, s * fy)
     }
 
     /** Size of a source frame after cropping. */

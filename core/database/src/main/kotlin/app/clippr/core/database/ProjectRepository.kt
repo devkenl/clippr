@@ -29,7 +29,8 @@ data class ProjectSummary(
 
 /** Result of opening a project document. */
 sealed interface LoadResult {
-    data class Loaded(val project: Project) : LoadResult
+    /** [droppedClipIds] lists damaged clips that were left out so the rest could open. */
+    data class Loaded(val project: Project, val droppedClipIds: List<String> = emptyList()) : LoadResult
     data object NotFound : LoadResult
 
     /** The document exists but could not be read. It is left untouched in the database. */
@@ -46,9 +47,17 @@ class ProjectRepository(
     fun observeProjects(): Flow<List<ProjectSummary>> =
         dao.observeProjects().map { rows -> rows.map { it.toSummary() } }
 
-    suspend fun create(name: String, settings: ProjectSettings): Project = withContext(io) {
+    /**
+     * Creates and saves a new project. [content] can fill the empty project before it is saved,
+     * e.g. with a template's title clips or freshly imported media.
+     */
+    suspend fun create(
+        name: String,
+        settings: ProjectSettings,
+        content: (Project) -> Project = { it },
+    ): Project = withContext(io) {
         val now = clock()
-        val project = Project(
+        val empty = Project(
             id = UUID.randomUUID().toString(),
             name = name.trim().ifEmpty { "Untitled project" },
             settings = settings,
@@ -56,6 +65,7 @@ class ProjectRepository(
             createdAtMs = now,
             modifiedAtMs = now,
         )
+        val project = content(empty).copy(id = empty.id, createdAtMs = now, modifiedAtMs = now)
         writeProject(project)
         project
     }
@@ -63,10 +73,16 @@ class ProjectRepository(
     suspend fun load(id: String): LoadResult = withContext(io) {
         val doc = dao.document(id) ?: return@withContext LoadResult.NotFound
         try {
-            LoadResult.Loaded(ProjectCodec.decode(doc.json))
+            val decoded = ProjectCodec.decodeDetailed(doc.json)
+            LoadResult.Loaded(decoded.project, decoded.droppedClipIds)
         } catch (e: ProjectFormatException) {
             LoadResult.Unreadable(e.message ?: "Unknown format error")
         }
+    }
+
+    /** Every readable project, fully loaded. Used for the media library and storage clean-up. */
+    suspend fun loadAll(): List<Project> = withContext(io) {
+        dao.allIds().mapNotNull { id -> (load(id) as? LoadResult.Loaded)?.project }
     }
 
     /** Saves [project], stamping it with the current time. Returns the saved instance. */
@@ -99,6 +115,8 @@ class ProjectRepository(
     suspend fun delete(id: String) = withContext(io) { dao.delete(id) }
 
     suspend fun setThumbnail(id: String, path: String?) = withContext(io) { dao.setThumbnail(id, path) }
+
+    suspend fun thumbnailPath(id: String): String? = withContext(io) { dao.project(id)?.thumbnailPath }
 
     private suspend fun writeProject(project: Project) {
         val existingThumb = dao.project(project.id)?.thumbnailPath

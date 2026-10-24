@@ -34,6 +34,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -67,6 +68,7 @@ import app.clippr.core.model.time.US_PER_SECOND
 import app.clippr.core.ui.components.FilterChip
 import app.clippr.core.ui.components.LabeledSlider
 import app.clippr.core.ui.components.PanelSection
+import app.clippr.core.ui.components.PillTabs
 import app.clippr.core.ui.components.SecondaryButton
 import app.clippr.core.ui.components.SegmentedChoice
 import app.clippr.core.ui.components.ToolButton
@@ -178,17 +180,59 @@ private fun ClipPanel(
             }
         }
     }
+    val tabs = buildList {
+        if (isText) add(InspectorTab.TEXT)
+        if (hasVisual && !isText) add(InspectorTab.VIDEO)
+        if (isText) add(InspectorTab.PLACEMENT)
+        if (hasAudio || type == MediaType.AUDIO) add(InspectorTab.AUDIO)
+        if (!isText && type != MediaType.IMAGE) add(InspectorTab.SPEED)
+        if (hasVisual) add(InspectorTab.ANIMATION)
+        if (hasVisual && !isText) add(InspectorTab.ADJUST)
+        if (hasVisual && !isText) add(InspectorTab.EFFECTS)
+    }
+    // The chosen tab is remembered across clips; fall back to the first one this clip has.
+    var chosen by rememberSaveable { mutableStateOf(InspectorTab.VIDEO) }
+    val current = if (chosen in tabs) chosen else tabs.first()
+    PillTabs(
+        tabs = tabs.map { it.label },
+        selected = tabs.indexOf(current),
+        onSelect = { chosen = tabs[it] },
+        compact = true,
+        modifier = Modifier.padding(horizontal = Spacing.md).padding(bottom = Spacing.sm),
+    )
     app.clippr.core.ui.components.Hairline()
 
-    if (isText) TextSection(clip, actions, fonts)
-    if (hasVisual) TransformSection(clip, isText, actions, key)
-    if (hasVisual) KeyframeSection(clip, actions, key)
-    if (hasVisual && !isText) ColorSection(clip, actions, luts)
-    if (hasVisual && !isText) EffectsSection(clip, actions)
-    if (hasVisual) FadeSection(clip, isText, actions)
-    if (hasVisual && !isText) CropSection(clip, actions)
-    if (!isText) SpeedSection(clip, type, actions)
-    if (hasAudio) AudioSection(clip, actions, key)
+    when (current) {
+        InspectorTab.TEXT -> {
+            TextContentSection(clip, actions, fonts)
+            TextStyleSection(clip, actions)
+        }
+        InspectorTab.VIDEO -> {
+            TransformSection(clip, isText = false, actions, key)
+            CropSection(clip, actions)
+        }
+        InspectorTab.PLACEMENT -> TransformSection(clip, isText = true, actions, key)
+        InspectorTab.AUDIO -> AudioSection(clip, actions, key)
+        InspectorTab.SPEED -> SpeedSection(clip, type, actions)
+        InspectorTab.ANIMATION -> {
+            KeyframeSection(clip, actions, key)
+            FadeSection(clip, isText, actions)
+        }
+        InspectorTab.ADJUST -> AdjustSections(clip, actions, luts)
+        InspectorTab.EFFECTS -> EffectsTab(clip, actions)
+    }
+}
+
+/** Inspector tabs; which ones appear depends on the kind of clip. */
+private enum class InspectorTab(val label: String) {
+    TEXT("Text"),
+    VIDEO("Video"),
+    PLACEMENT("Position"),
+    AUDIO("Audio"),
+    SPEED("Speed"),
+    ANIMATION("Animation"),
+    ADJUST("Adjust"),
+    EFFECTS("Effects"),
 }
 
 @Composable
@@ -208,7 +252,7 @@ private fun TransformSection(clip: Clip, isText: Boolean, actions: InspectorActi
         val src = if (key.insideClip) key.sourceUs else clip.sourceStartUs
         actions.onLive(clip.id, label) { Animation.editTransformAt(it, src, key.toleranceUs, f) }
     }
-    PanelSection("Transform", ClipprIcons.Transform) {
+    PanelSection(if (isText) "Position & size" else "Transform", ClipprIcons.Transform, initiallyExpanded = false) {
         if (clip.keyframes.isNotEmpty()) {
             Text(
                 if (key.insideClip) "Animated — changes update the keyframe at the playhead." else "Animated — move the playhead over the clip to edit.",
@@ -224,6 +268,17 @@ private fun TransformSection(clip: Clip, isText: Boolean, actions: InspectorActi
         LabeledSlider("Rotation", t.rotationDegrees, { v -> live("Rotate") { it.copy(rotationDegrees = v) } }, actions.onCommit, -180f..180f, { "${it.roundToInt()}°" }, defaultValue = 0f, enabled = editable)
         LabeledSlider("Opacity", t.opacity, { v -> live("Opacity") { it.copy(opacity = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 1f, enabled = editable)
         if (!isText) {
+            Spacer(Modifier.height(Spacing.sm))
+            Text("Flip", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
+            Spacer(Modifier.height(Spacing.xs))
+            Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                FlipButton("Horizontal", ClipprIcons.FlipHorizontal, clip.transform.flipHorizontal, Modifier.weight(1f)) {
+                    actions.apply(clip.id, "Flip horizontally") { c -> c.copy(transform = c.transform.copy(flipHorizontal = !c.transform.flipHorizontal)) }
+                }
+                FlipButton("Vertical", ClipprIcons.FlipVertical, clip.transform.flipVertical, Modifier.weight(1f)) {
+                    actions.apply(clip.id, "Flip vertically") { c -> c.copy(transform = c.transform.copy(flipVertical = !c.transform.flipVertical)) }
+                }
+            }
             Spacer(Modifier.height(Spacing.sm))
             Text("Frame", style = MaterialTheme.typography.bodySmall, color = palette.textSecondary)
             Spacer(Modifier.height(Spacing.xs))
@@ -261,7 +316,7 @@ private fun KeyframeSection(clip: Clip, actions: InspectorActions, key: KeyConte
     val keys = clip.keyframes
     val atIndex = if (key.insideClip) Animation.indexNear(keys, key.sourceUs, key.toleranceUs) { it.sourceUs } else -1
     val visible = keys.mapNotNull { k -> Animation.timelineTimeOf(clip, k.sourceUs) }.sorted()
-    PanelSection("Keyframes", ClipprIcons.Keyframe, initiallyExpanded = keys.isNotEmpty()) {
+    PanelSection("Keyframes", ClipprIcons.Keyframe, initiallyExpanded = false, trailing = { CountBadge(keys.size) }) {
         Text(
             "Keyframes record position, scale, rotation and opacity at a moment. Clippr animates between them.",
             style = MaterialTheme.typography.bodySmall,
@@ -341,31 +396,36 @@ private fun KeyframeSection(clip: Clip, actions: InspectorActions, key: KeyConte
 }
 
 @Composable
-private fun ColorSection(clip: Clip, actions: InspectorActions, luts: List<String>) {
+private fun AdjustSections(clip: Clip, actions: InspectorActions, luts: List<String>) {
     val c = palette
     val g = clip.color
     fun live(label: String, f: (ColorGrade) -> ColorGrade) = actions.onLive(clip.id, label) { it.copy(color = f(it.color)) }
-    PanelSection("Color", ClipprIcons.ColorWheel, initiallyExpanded = !g.isIdentity) {
-        Text("Filter", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
-        Spacer(Modifier.height(Spacing.xs))
+    PanelSection("Filters", ClipprIcons.Sparkle, initiallyExpanded = false, trailing = { if (g.filter != FilterPreset.NONE) ActiveDot() }) {
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             FilterPreset.entries.forEach { f ->
                 FilterChip(f.label, g.filter == f, { actions.apply(clip.id, "Filter") { it.copy(color = it.color.copy(filter = f)) } })
             }
         }
         if (g.filter != FilterPreset.NONE) {
-            LabeledSlider("Filter strength", g.filterStrength, { v -> live("Filter strength") { it.copy(filterStrength = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 1f)
+            Spacer(Modifier.height(Spacing.sm))
+            LabeledSlider("Strength", g.filterStrength, { v -> live("Filter strength") { it.copy(filterStrength = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 1f)
         }
-        Spacer(Modifier.height(Spacing.sm))
+    }
+    val lightChanged = g.exposure != 0f || g.contrast != 0f || g.highlights != 0f || g.shadows != 0f
+    PanelSection("Light", ClipprIcons.Sliders, initiallyExpanded = false, trailing = { if (lightChanged) ActiveDot() }) {
         LabeledSlider("Exposure", g.exposure, { v -> live("Exposure") { it.copy(exposure = v) } }, actions.onCommit, -2f..2f, { String.format(Locale.ROOT, "%+.1f", it) }, defaultValue = 0f)
         LabeledSlider("Contrast", g.contrast, { v -> live("Contrast") { it.copy(contrast = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
         LabeledSlider("Highlights", g.highlights, { v -> live("Highlights") { it.copy(highlights = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
         LabeledSlider("Shadows", g.shadows, { v -> live("Shadows") { it.copy(shadows = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
+    }
+    val colorChanged = g.saturation != 0f || g.temperature != 0f || g.tint != 0f
+    PanelSection("Color", ClipprIcons.ColorWheel, initiallyExpanded = false, trailing = { if (colorChanged) ActiveDot() }) {
         LabeledSlider("Saturation", g.saturation, { v -> live("Saturation") { it.copy(saturation = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
         LabeledSlider("Temperature", g.temperature, { v -> live("Temperature") { it.copy(temperature = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
         LabeledSlider("Tint", g.tint, { v -> live("Tint") { it.copy(tint = v) } }, actions.onCommit, -1f..1f, ::signedPercent, defaultValue = 0f)
-        Spacer(Modifier.height(Spacing.sm))
-        Text("LUT (.cube)", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
+    }
+    PanelSection("LUT", ClipprIcons.Layers, initiallyExpanded = false, trailing = { if (g.lutId != null) ActiveDot() }) {
+        Text("Apply a .cube colour lookup table.", style = MaterialTheme.typography.bodySmall, color = c.textTertiary)
         Spacer(Modifier.height(Spacing.xs))
         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(Spacing.xs)) {
             FilterChip("None", g.lutId == null, { actions.apply(clip.id, "Remove LUT") { it.copy(color = it.color.copy(lutId = null)) } })
@@ -377,9 +437,10 @@ private fun ColorSection(clip: Clip, actions: InspectorActions, luts: List<Strin
         if (g.lutId != null && g.lutId !in luts) {
             Text("LUT “${g.lutId}” is missing on this device; it is skipped.", style = MaterialTheme.typography.bodySmall, color = c.warning)
         }
-        Spacer(Modifier.height(Spacing.md))
+    }
+    Box(Modifier.padding(Spacing.lg)) {
         SecondaryButton(
-            "Reset color",
+            "Reset all adjustments",
             onClick = { actions.apply(clip.id, "Reset color") { it.copy(color = ColorGrade.NONE) } },
             icon = ClipprIcons.Undo,
             enabled = !g.isIdentity,
@@ -388,22 +449,11 @@ private fun ColorSection(clip: Clip, actions: InspectorActions, luts: List<Strin
 }
 
 @Composable
-private fun EffectsSection(clip: Clip, actions: InspectorActions) {
-    val fx = clip.effects
-    fun live(label: String, f: (VisualEffects) -> VisualEffects) = actions.onLive(clip.id, label) { it.copy(effects = f(it.effects)) }
-    PanelSection("Effects", ClipprIcons.Sparkle, initiallyExpanded = fx.blur > 0f || fx.vignette > 0f || fx.grain > 0f) {
-        LabeledSlider("Blur", fx.blur, { v -> live("Blur") { it.copy(blur = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 0f)
-        LabeledSlider("Vignette", fx.vignette, { v -> live("Vignette") { it.copy(vignette = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 0f)
-        LabeledSlider("Film grain", fx.grain, { v -> live("Film grain") { it.copy(grain = v) } }, actions.onCommit, 0f..1f, ::percent, defaultValue = 0f)
-    }
-}
-
-@Composable
 private fun FadeSection(clip: Clip, isText: Boolean, actions: InspectorActions) {
     val fx = clip.effects
     val maxFade = (clip.durationUs / 2).coerceAtMost(5 * US_PER_SECOND).coerceAtLeast(1)
     fun live(label: String, f: (VisualEffects) -> VisualEffects) = actions.onLive(clip.id, label) { it.copy(effects = f(it.effects)) }
-    PanelSection(if (isText) "Fade" else "Fade to black", ClipprIcons.Fade, initiallyExpanded = fx.hasFades) {
+    PanelSection(if (isText) "Fade" else "Fade to black", ClipprIcons.Fade, initiallyExpanded = false, trailing = { if (fx.hasFades) ActiveDot() }) {
         LabeledSlider(
             if (isText) "Fade in" else "From black",
             fx.fadeInUs.coerceAtMost(maxFade).toFloat(),
@@ -437,7 +487,7 @@ private fun CropSection(clip: Clip, actions: InspectorActions) {
     val crop = clip.transform.crop
     fun live(f: (app.clippr.core.model.Crop) -> app.clippr.core.model.Crop) =
         actions.onLive(clip.id, "Crop") { it.copy(transform = it.transform.copy(crop = f(it.transform.crop))) }
-    PanelSection("Crop", ClipprIcons.Crop, initiallyExpanded = false) {
+    PanelSection("Crop", ClipprIcons.Crop, initiallyExpanded = false, trailing = { if (!crop.isNone) ActiveDot() }) {
         LabeledSlider("Left", crop.left, { v -> live { it.copy(left = v) } }, actions.onCommit, 0f..0.45f, ::percent, defaultValue = 0f)
         LabeledSlider("Right", crop.right, { v -> live { it.copy(right = v) } }, actions.onCommit, 0f..0.45f, ::percent, defaultValue = 0f)
         LabeledSlider("Top", crop.top, { v -> live { it.copy(top = v) } }, actions.onCommit, 0f..0.45f, ::percent, defaultValue = 0f)
@@ -450,7 +500,7 @@ private val SpeedPresets = listOf(0.25f, 0.5f, 1f, 1.5f, 2f, 4f)
 @Composable
 private fun SpeedSection(clip: Clip, type: MediaType?, actions: InspectorActions) {
     if (type == MediaType.IMAGE) return
-    PanelSection("Speed", ClipprIcons.Speed, initiallyExpanded = false) {
+    PanelSection("Speed", ClipprIcons.Speed, initiallyExpanded = false, trailing = { if (clip.speed != 1f) ActiveDot() }) {
         SegmentedChoice(
             options = SpeedPresets,
             selected = SpeedPresets.firstOrNull { it == clip.speed } ?: 1f,
@@ -477,7 +527,7 @@ private fun AudioSection(clip: Clip, actions: InspectorActions, key: KeyContext)
     val atIndex = if (key.insideClip) Animation.indexNear(keys, key.sourceUs, key.toleranceUs) { it.sourceUs } else -1
     fun liveAudio(label: String, f: (app.clippr.core.model.ClipAudio) -> app.clippr.core.model.ClipAudio) =
         actions.onLive(clip.id, label) { it.copy(audio = f(it.audio)) }
-    PanelSection("Audio", ClipprIcons.Volume) {
+    PanelSection("Volume", ClipprIcons.Volume, initiallyExpanded = false, trailing = { if (a.muted || a.volume != 1f || keys.isNotEmpty()) ActiveDot() }) {
         Row(Modifier.fillMaxWidth().heightIn(min = 44.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Mute clip", style = MaterialTheme.typography.bodyMedium, color = c.textPrimary, modifier = Modifier.weight(1f))
             Switch(
@@ -521,6 +571,8 @@ private fun AudioSection(clip: Clip, actions: InspectorActions, key: KeyContext)
                 size = 40.dp,
             )
         }
+    }
+    PanelSection("Audio fades", ClipprIcons.Fade, initiallyExpanded = false, trailing = { if (a.fadeInUs > 0 || a.fadeOutUs > 0) ActiveDot() }) {
         LabeledSlider(
             "Fade in",
             a.fadeInUs.coerceAtMost(maxFade).toFloat(),
@@ -548,12 +600,12 @@ private val TextColors = listOf(
 private val TextBackgrounds = listOf(0x00000000, 0xB3101116.toInt(), 0xE6A78BFA.toInt(), 0xE6F5F5F7.toInt())
 
 @Composable
-private fun TextSection(clip: Clip, actions: InspectorActions, fonts: List<FontChoice>) {
+private fun TextContentSection(clip: Clip, actions: InspectorActions, fonts: List<FontChoice>) {
     val c = palette
     val style: TextStyle = clip.text ?: return
     fun live(label: String, f: (TextStyle) -> TextStyle) = actions.onLive(clip.id, label) { it.copy(text = it.text?.let(f)) }
 
-    PanelSection("Text", ClipprIcons.Text) {
+    PanelSection("Content & font", ClipprIcons.Text, initiallyExpanded = false) {
         var draft by remember(clip.id) { mutableStateOf(style.text) }
         var editing by remember(clip.id) { mutableStateOf(false) }
         // Keep the field in sync with undo/redo while the user is not typing.
@@ -613,7 +665,15 @@ private fun TextSection(clip: Clip, actions: InspectorActions, fonts: List<FontC
         if (fonts.none { it.id == style.fontId }) {
             Text("This font is missing on this device; the default font is used.", style = MaterialTheme.typography.bodySmall, color = c.warning)
         }
-        Spacer(Modifier.height(Spacing.md))
+    }
+}
+
+@Composable
+private fun TextStyleSection(clip: Clip, actions: InspectorActions) {
+    val c = palette
+    val style: TextStyle = clip.text ?: return
+    fun live(label: String, f: (TextStyle) -> TextStyle) = actions.onLive(clip.id, label) { it.copy(text = it.text?.let(f)) }
+    PanelSection("Style", ClipprIcons.Font, initiallyExpanded = false) {
         LabeledSlider("Size", style.sizeFraction, { v -> live("Text size") { it.copy(sizeFraction = v) } }, actions.onCommit, 0.02f..0.25f, { "${(it * 100).roundToInt()}" }, defaultValue = 0.07f)
         Text("Color", style = MaterialTheme.typography.bodySmall, color = c.textSecondary)
         Spacer(Modifier.height(Spacing.xs))
@@ -784,7 +844,44 @@ private fun ProjectPanel(project: Project, actions: InspectorActions) {
     }
 }
 
-private fun percent(v: Float) = "${(v * 100).roundToInt()}%"
+@Composable
+private fun FlipButton(label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val c = palette
+    Row(
+        modifier
+            .heightIn(min = 40.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (active) c.accentSoft else c.panel)
+            .border(1.dp, if (active) c.accent.copy(alpha = 0.6f) else c.hairline, RoundedCornerShape(10.dp))
+            .clickable(role = Role.Switch, onClickLabel = "Flip $label") { onClick() }
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = if (active) c.accent else c.textSecondary, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.size(6.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = if (active) c.accent else c.textSecondary)
+    }
+}
+
+/** Small accent dot in a section header: this section has non-default settings. */
+@Composable
+internal fun ActiveDot() {
+    Box(Modifier.padding(end = 8.dp).size(7.dp).clip(CircleShape).background(palette.accent))
+}
+
+@Composable
+private fun CountBadge(count: Int) {
+    if (count <= 0) return
+    val c = palette
+    Box(
+        Modifier.padding(end = 8.dp).clip(RoundedCornerShape(50)).background(c.accentSoft).padding(horizontal = 7.dp, vertical = 1.dp),
+    ) {
+        Text("$count", style = MaterialTheme.typography.labelSmall, color = c.accent)
+    }
+}
+
+internal fun percent(v: Float) = "${(v * 100).roundToInt()}%"
 private fun signedPercent(v: Float) = String.format(Locale.ROOT, "%+d", (v * 100).roundToInt())
 private fun signed2(v: Float) = String.format(Locale.ROOT, "%+.2f", v)
 private fun seconds(us: Long) = String.format(Locale.ROOT, "%.1fs", us / 1_000_000f)

@@ -113,6 +113,7 @@ private fun SaveIndicator(status: SaveStatus) {
 
 @Composable
 internal fun TransportBar(
+    /** True as soon as the user asks to play (the button then offers Pause). */
     isPlaying: Boolean,
     positionUs: Long,
     durationUs: Long,
@@ -128,6 +129,7 @@ internal fun TransportBar(
     onQuality: (PreviewQuality) -> Unit,
     onGuides: () -> Unit,
     onFullscreen: (() -> Unit)?,
+    buffering: Boolean = false,
 ) {
     val c = palette
     Row(
@@ -166,6 +168,14 @@ internal fun TransportBar(
                 tint = c.background,
                 modifier = Modifier.size(22.dp),
             )
+            if (isPlaying && buffering) {
+                // Loading: a thin ring around the button, so it never looks frozen.
+                androidx.compose.material3.CircularProgressIndicator(
+                    color = c.accent,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(44.dp),
+                )
+            }
         }
         ToolButton(ClipprIcons.ChevronRight, "Next frame", { onStep(1) }, enabled = enabled, size = 40.dp)
         if (!compact) ToolButton(ClipprIcons.SkipForward, "Go to end", onEnd, enabled = enabled)
@@ -223,6 +233,7 @@ internal fun TimelineToolbar(
     onZoomIn: () -> Unit,
     onZoomOut: () -> Unit,
     onFit: () -> Unit,
+    onVoiceover: () -> Unit = {},
 ) {
     val c = palette
     Row(
@@ -235,6 +246,7 @@ internal fun TimelineToolbar(
             ToolButton(ClipprIcons.Copy, "Duplicate clip (Ctrl+D)", onDuplicate, enabled = hasSelection, size = 40.dp)
             ToolButton(ClipprIcons.Freeze, "Freeze frame", onFreeze, size = 40.dp)
             ToolButton(ClipprIcons.Text, "Add title (T)", onAddText, size = 40.dp)
+            ToolButton(ClipprIcons.Mic, "Record voiceover (R)", onVoiceover, size = 40.dp)
         }
         Spacer(Modifier.weight(1f))
         ToolButton(ClipprIcons.Magnet, if (snapping) "Snapping on" else "Snapping off", onSnapping, selected = snapping, size = 40.dp)
@@ -256,6 +268,7 @@ internal fun ToolDrawer(
     onProject: () -> Unit,
     onDuplicate: () -> Unit,
     onFreeze: () -> Unit,
+    onVoiceover: () -> Unit = {},
 ) {
     val c = palette
     Row(
@@ -273,6 +286,7 @@ internal fun ToolDrawer(
         DrawerTool(ClipprIcons.Copy, "Duplicate", onDuplicate, enabled = hasSelection)
         DrawerTool(ClipprIcons.Freeze, "Freeze", onFreeze)
         DrawerTool(ClipprIcons.Text, "Text", onText)
+        DrawerTool(ClipprIcons.Mic, "Voiceover", onVoiceover)
         DrawerTool(ClipprIcons.Layers, "Project", onProject)
     }
 }

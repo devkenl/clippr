@@ -2,10 +2,13 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
-      No permissions are requested. Media is picked with the Storage Access Framework, and exports
-      are added to the shared Movies collection through MediaStore, which needs no permission on
-      Android 10+. There is no INTERNET permission: Clippr never sends data anywhere.
+      Media is picked with the Storage Access Framework, and exports are added to the shared
+      Movies collection through MediaStore, which needs no permission on Android 10+.
+      RECORD_AUDIO is only used by the voiceover recorder and is asked for the first time you
+      open it. There is no INTERNET permission: Clippr never sends data anywhere.
     -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <application
         android:name=".ClipprApplication"

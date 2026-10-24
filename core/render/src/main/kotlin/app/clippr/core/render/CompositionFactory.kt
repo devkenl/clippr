@@ -34,6 +34,7 @@ import androidx.media3.transformer.Effects
 import app.clippr.core.model.Animation
 import app.clippr.core.model.Clip
 import app.clippr.core.model.FitMode
+import app.clippr.core.model.StyleEffectType
 import app.clippr.core.model.Transform
 import app.clippr.core.model.TransformKeyframe
 import app.clippr.core.model.render.Affine
@@ -55,8 +56,9 @@ import kotlin.random.Random
  * call this with the same plan; they differ only in output size.
  *
  * Per visual clip the effect chain is: Crop → Presentation (fit/fill into the canvas) → blur →
- * colour (all adjustments baked into one 3D LUT) → canvas matrix (scale, rotate, position;
- * keyframed if animated) → vignette/grain overlays → opacity × fades. Opacity is applied as an
+ * colour (all adjustments baked into one 3D LUT) → stylized shader effects (see
+ * [ShaderEffects]) → canvas matrix (flip, scale, rotate, position; keyframed if animated) →
+ * shake → vignette/grain overlays → opacity × fades. Opacity is applied as an
  * RGB scale, which is exact because the MVP composites a single video layer over black.
  *
  * Effects receive composition-relative frame timestamps in both CompositionPlayer and
@@ -139,11 +141,19 @@ object CompositionFactory {
             if (!segment.color.isIdentity && resources != null) {
                 add(SingleColorLut.createFromCube(resources.bakedLut(segment.color)))
             }
+            // Stylized effects work on the framed clip, before it is placed on the canvas.
+            fx.styles.filter { it.type != StyleEffectType.SHAKE }.forEach { style ->
+                ShaderEffects.create(style, segment.timelineStartUs)?.let(::add)
+            }
             if (animated) {
                 add(KeyframedMatrix(segment, canvasAspect))
             } else {
                 val matrix = FrameGeometry.ndcMatrix(transform, canvasAspect)
                 if (!matrix.isIdentity) add(NdcMatrixTransformation(matrix))
+            }
+            // Shake moves the placed clip like a handheld camera.
+            fx.styles.firstOrNull { it.type == StyleEffectType.SHAKE }?.let { style ->
+                ShaderEffects.create(style, segment.timelineStartUs)?.let(::add)
             }
             val overlays = buildList<TextureOverlay> {
                 if (fx.vignette > 0f) add(VignetteOverlay(outputWidth, outputHeight, fx.vignette))

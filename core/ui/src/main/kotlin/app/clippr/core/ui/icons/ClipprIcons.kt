@@ -538,6 +538,155 @@ object ClipprIcons {
         }
     }
 
+    val Home by lazy {
+        icon("Home") {
+            stroke {
+                moveTo(4f, 10.5f); lineTo(12f, 4f); lineTo(20f, 10.5f)
+                moveTo(6f, 9f); verticalLineTo(19f)
+                curveTo(6f, 19.6f, 6.4f, 20f, 7f, 20f); horizontalLineTo(17f)
+                curveTo(17.6f, 20f, 18f, 19.6f, 18f, 19f); verticalLineTo(9f)
+                moveTo(10f, 20f); verticalLineTo(14.5f); horizontalLineTo(14f); verticalLineTo(20f)
+            }
+        }
+    }
+
+    val Grid by lazy {
+        icon("Grid") {
+            stroke {
+                roundRect(4f, 4f, 6.5f, 6.5f, 1.5f)
+                roundRect(13.5f, 4f, 6.5f, 6.5f, 1.5f)
+                roundRect(4f, 13.5f, 6.5f, 6.5f, 1.5f)
+                roundRect(13.5f, 13.5f, 6.5f, 6.5f, 1.5f)
+            }
+        }
+    }
+
+    val Learn by lazy {
+        icon("Learn") {
+            stroke {
+                moveTo(2.5f, 9f); lineTo(12f, 4.5f); lineTo(21.5f, 9f); lineTo(12f, 13.5f); close()
+                moveTo(6.5f, 11f); verticalLineTo(15.5f)
+                curveTo(8f, 17.2f, 10f, 18f, 12f, 18f); curveTo(14f, 18f, 16f, 17.2f, 17.5f, 15.5f); verticalLineTo(11f)
+                moveTo(21.5f, 9f); verticalLineTo(14f)
+            }
+        }
+    }
+
+    val Settings by lazy {
+        icon("Settings") {
+            stroke {
+                circle(12f, 12f, 3f)
+                circle(12f, 12f, 6.5f)
+                for (i in 0 until 8) {
+                    val a = Math.toRadians(i * 45.0)
+                    val cs = kotlin.math.cos(a).toFloat()
+                    val sn = kotlin.math.sin(a).toFloat()
+                    moveTo(12f + 6.5f * cs, 12f + 6.5f * sn)
+                    lineTo(12f + 9f * cs, 12f + 9f * sn)
+                }
+            }
+        }
+    }
+
+    val Mic by lazy {
+        icon("Mic") {
+            stroke {
+                roundRect(9f, 3f, 6f, 11f, 3f)
+                moveTo(5.5f, 11f); curveTo(5.5f, 14.6f, 8.4f, 17.5f, 12f, 17.5f)
+                curveTo(15.6f, 17.5f, 18.5f, 14.6f, 18.5f, 11f)
+                moveTo(12f, 17.5f); verticalLineTo(21f)
+                moveTo(8.5f, 21f); horizontalLineTo(15.5f)
+            }
+        }
+    }
+
+    val Storage by lazy {
+        icon("Storage") {
+            stroke {
+                roundRect(3.5f, 5f, 17f, 14f, 2f)
+                moveTo(3.5f, 14f); horizontalLineTo(20.5f)
+                moveTo(16.5f, 16.5f); lineTo(16.6f, 16.5f)
+            }
+        }
+    }
+
+    val FlipHorizontal by lazy {
+        icon("FlipHorizontal") {
+            stroke {
+                moveTo(12f, 3f); verticalLineTo(21f)
+                moveTo(9f, 6f); lineTo(3.5f, 18f); horizontalLineTo(9f); close()
+                moveTo(15f, 6f); lineTo(20.5f, 18f); horizontalLineTo(15f); close()
+            }
+        }
+    }
+
+    val FlipVertical by lazy {
+        icon("FlipVertical") {
+            stroke {
+                moveTo(3f, 12f); horizontalLineTo(21f)
+                moveTo(6f, 9f); lineTo(18f, 3.5f); verticalLineTo(9f); close()
+                moveTo(6f, 15f); lineTo(18f, 20.5f); verticalLineTo(15f); close()
+            }
+        }
+    }
+
+    val CheckCircle by lazy {
+        icon("CheckCircle") {
+            stroke {
+                circle(12f, 12f, 8.5f)
+                moveTo(8.2f, 12.3f); lineTo(10.8f, 14.8f); lineTo(15.8f, 9.4f)
+            }
+        }
+    }
+
+    val Retry by lazy {
+        icon("Retry") {
+            stroke {
+                moveTo(19f, 12f)
+                curveTo(19f, 15.9f, 15.9f, 19f, 12f, 19f)
+                curveTo(8.1f, 19f, 5f, 15.9f, 5f, 12f)
+                curveTo(5f, 8.1f, 8.1f, 5f, 12f, 5f)
+                curveTo(14.3f, 5f, 16.3f, 6.1f, 17.6f, 7.8f)
+                moveTo(18f, 3.8f); verticalLineTo(8.2f); horizontalLineTo(13.6f)
+            }
+        }
+    }
+
+    val Sort by lazy {
+        icon("Sort") {
+            stroke {
+                moveTo(4f, 7f); horizontalLineTo(20f)
+                moveTo(7f, 12f); horizontalLineTo(17f)
+                moveTo(10f, 17f); horizontalLineTo(14f)
+            }
+        }
+    }
+
+    val Info by lazy {
+        icon("Info") {
+            stroke {
+                circle(12f, 12f, 8.5f)
+                moveTo(12f, 11f); verticalLineTo(16f)
+                moveTo(12f, 8f); lineTo(12.01f, 8f)
+            }
+        }
+    }
+
+    val Cloud by lazy {
+        icon("Cloud") {
+            stroke {
+                moveTo(7f, 18f)
+                curveTo(4.8f, 18f, 3f, 16.2f, 3f, 14f)
+                curveTo(3f, 11.9f, 4.6f, 10.2f, 6.7f, 10f)
+                curveTo(7.4f, 7.1f, 9.9f, 5f, 13f, 5f)
+                curveTo(16.4f, 5f, 19.2f, 7.6f, 19.5f, 11f)
+                curveTo(20.4f, 11.6f, 21f, 12.7f, 21f, 14f)
+                curveTo(21f, 16.2f, 19.2f, 18f, 17f, 18f)
+                close()
+            }
+        }
+    }
+
     // --------------------------------------------------------------------------------------
 
     private fun icon(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

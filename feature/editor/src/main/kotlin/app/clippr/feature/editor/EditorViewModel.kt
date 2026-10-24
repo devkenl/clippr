@@ -5,15 +5,22 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import app.clippr.core.database.AppSettings
 import app.clippr.core.database.LoadResult
 import app.clippr.core.database.ProjectRepository
 import app.clippr.core.media.FrameGrabber
+import app.clippr.core.media.ImportOutcomeMedia
 import app.clippr.core.media.MediaAccess
+import app.clippr.core.media.MediaImporter
 import app.clippr.core.media.MediaProbe
 import app.clippr.core.media.ProbeResult
 import app.clippr.core.media.ThumbnailRepository
+import app.clippr.core.media.VoiceRecorder
 import app.clippr.core.media.WaveformRepository
 import app.clippr.core.model.Animation
+import app.clippr.core.model.ProjectRepair
+import app.clippr.core.model.StyleEffectType
+import app.clippr.core.model.StyleEffects
 import app.clippr.core.model.Clip
 import app.clippr.core.model.MediaAsset
 import app.clippr.core.model.MediaType
@@ -73,6 +80,21 @@ class EditorDependencies(
     val appScope: CoroutineScope,
     val resources: RenderResources,
     val frameGrabber: FrameGrabber,
+    val importer: MediaImporter,
+    val settings: AppSettings,
+)
+
+/** State of the voiceover recorder sheet. */
+data class VoiceoverState(
+    val visible: Boolean = false,
+    /** Seconds left in the 3-2-1 countdown, or 0. */
+    val countdown: Int = 0,
+    val recording: Boolean = false,
+    val elapsedMs: Long = 0L,
+    val level: Float = 0f,
+    /** Timeline time where the recording will be placed. */
+    val startUs: Long = 0L,
+    val error: String? = null,
 )
 
 enum class SaveStatus { SAVED, UNSAVED, SAVING, FAILED }
@@ -96,6 +118,11 @@ data class EditorUiState(
     val recentAssetIds: Set<String> = emptySet(),
     val fonts: List<FontLibrary.FontInfo> = emptyList(),
     val luts: List<String> = emptyList(),
+    /** Assets that point at cloud apps (projects from before 0.2.0); offered a local copy. */
+    val cloudAssetIds: Set<String> = emptySet(),
+    /** Progress text while importing or copying files, e.g. "Copying clip.mp4 … 40%". */
+    val importStatus: String? = null,
+    val voiceover: VoiceoverState = VoiceoverState(),
 ) {
     val selectedClip: Clip? get() = selectedClipIds.singleOrNull()?.let { project?.sequence?.clip(it) }
 }
@@ -116,7 +143,7 @@ class EditorViewModel(
     private var previewJob: Job? = null
     private var lastThumbnailKey: String? = null
 
-    private val _state = MutableStateFlow(EditorUiState())
+    private val _state = MutableStateFlow(EditorUiState(previewQuality = previewQualityFromSettings(deps.settings.current.previewQuality)))
     val state: StateFlow<EditorUiState> = _state.asStateFlow()
 
     val resources: RenderResources get() = deps.resources
@@ -134,13 +161,23 @@ class EditorViewModel(
     private suspend fun load() {
         when (val result = deps.repository.load(projectId)) {
             is LoadResult.Loaded -> {
-                val problems = ProjectIntegrity.problems(result.project)
-                history = EditHistory(result.project)
+                // Values a bug or an older version may have saved (NaN keyframes etc.) are fixed
+                // before anything is rendered; see ProjectRepair.
+                val repaired = ProjectRepair.repair(result.project)
+                val problems = ProjectIntegrity.problems(repaired.project)
+                history = EditHistory(repaired.project)
                 _state.update { it.copy(loading = false) }
                 publish(previewNow = true)
-                if (problems.isNotEmpty()) {
-                    showMessage("This project has ${problems.size} inconsistencies. Affected clips may render as gaps.")
+                when {
+                    result.droppedClipIds.isNotEmpty() -> showMessage(
+                        "${result.droppedClipIds.size} damaged clip${if (result.droppedClipIds.size == 1) " was" else "s were"} left out so the project could open.",
+                    )
+                    repaired.changed -> showMessage(
+                        "Repaired invalid settings on ${repaired.repairedClips} clip${if (repaired.repairedClips == 1) "" else "s"}.",
+                    )
+                    problems.isNotEmpty() -> showMessage("This project has ${problems.size} inconsistencies. Affected clips may render as gaps.")
                 }
+                if (repaired.changed || result.droppedClipIds.isNotEmpty()) scheduleSave()
                 refreshMissingMedia()
             }
             LoadResult.NotFound -> _state.update { it.copy(loading = false, loadError = "This project no longer exists.") }
@@ -438,7 +475,126 @@ class EditorViewModel(
 
     fun setPreviewQuality(quality: PreviewQuality) {
         _state.update { it.copy(previewQuality = quality) }
+        deps.settings.update { it.copy(previewQuality = quality.name) }
         displayed?.let { preview.setProject(it, quality) }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Effects
+    // -----------------------------------------------------------------------------------------
+
+    /** Adds [type] to the clip, or removes it if already applied. */
+    fun toggleStyleEffect(clipId: String, type: StyleEffectType) {
+        val clip = history?.current?.sequence?.clip(clipId) ?: return
+        val adding = clip.effects.styles.none { it.type == type }
+        execute(UpdateClip(clipId, if (adding) "Add ${type.label}" else "Remove ${type.label}") { it.copy(effects = StyleEffects.toggle(it.effects, type)) })
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Voiceover
+    // -----------------------------------------------------------------------------------------
+
+    private val recorder = VoiceRecorder(deps.context)
+    private var voiceoverJob: Job? = null
+
+    fun openVoiceover() {
+        if (recorder.isRecording) return
+        _state.update { it.copy(voiceover = VoiceoverState(visible = true, startUs = currentFrame())) }
+    }
+
+    /** Starts recording (after an optional countdown). The timeline plays muted meanwhile. */
+    fun startVoiceover() {
+        if (recorder.isRecording || voiceoverJob?.isActive == true) return
+        preview.pause()
+        val startUs = currentFrame()
+        voiceoverJob = viewModelScope.launch {
+            if (deps.settings.current.voiceoverCountdown) {
+                for (n in 3 downTo 1) {
+                    _state.update { it.copy(voiceover = it.voiceover.copy(countdown = n, startUs = startUs, error = null)) }
+                    delay(1_000)
+                }
+            }
+            try {
+                recorder.start()
+            } catch (e: Exception) {
+                _state.update { it.copy(voiceover = it.voiceover.copy(countdown = 0, recording = false, error = e.message)) }
+                return@launch
+            }
+            preview.setMuted(true)
+            preview.seekTo(startUs)
+            preview.play()
+            _state.update { it.copy(voiceover = it.voiceover.copy(countdown = 0, recording = true, startUs = startUs, error = null)) }
+            while (recorder.isRecording) {
+                _state.update { it.copy(voiceover = it.voiceover.copy(elapsedMs = recorder.elapsedMs, level = recorder.level())) }
+                delay(60)
+            }
+        }
+    }
+
+    /** Stops recording and places the take on a free audio track at the start position. */
+    fun stopVoiceover() {
+        val wasCountingDown = !recorder.isRecording
+        voiceoverJob?.cancel()
+        voiceoverJob = null
+        preview.pause()
+        preview.setMuted(false)
+        if (wasCountingDown) {
+            _state.update { it.copy(voiceover = it.voiceover.copy(countdown = 0, recording = false)) }
+            return
+        }
+        val startUs = _state.value.voiceover.startUs
+        val file = recorder.stop()
+        _state.update { it.copy(voiceover = VoiceoverState(visible = false)) }
+        if (file == null) {
+            showMessage("The recording was too short to keep.")
+            return
+        }
+        viewModelScope.launch {
+            when (val r = deps.probe.probe(Uri.fromFile(file))) {
+                is ProbeResult.Success -> {
+                    val asset = r.asset.copy(displayName = file.nameWithoutExtension.replace('-', ' '))
+                    val project = history?.current ?: return@launch
+                    val clipId = newId("clip")
+                    val free = project.sequence.tracks.firstOrNull { track ->
+                        track.kind == TrackKind.AUDIO && !track.locked &&
+                            track.clips.none { it.timelineStartUs < startUs + asset.durationUs && startUs < it.timelineEndUs }
+                    }
+                    val commands = buildList<EditCommand> {
+                        add(ImportAssets(listOf(asset)))
+                        if (free != null) {
+                            add(AddAssetClip(asset.id, clipId, free.id, startUs = startUs))
+                        } else {
+                            val trackId = newId("track")
+                            add(AddTrack(TrackKind.AUDIO, trackId))
+                            add(AddAssetClip(asset.id, clipId, trackId, startUs = startUs))
+                        }
+                    }
+                    if (execute(CompositeCommand("Record voiceover", commands))) {
+                        _state.update { it.copy(selectedClipIds = setOf(clipId)) }
+                        showMessage("Voiceover added to the timeline.")
+                    }
+                }
+                is ProbeResult.Failure -> {
+                    file.delete()
+                    showMessage("Couldn't read the recording: ${r.reason}")
+                }
+            }
+        }
+    }
+
+    fun closeVoiceover() {
+        voiceoverJob?.cancel()
+        voiceoverJob = null
+        if (recorder.isRecording) {
+            recorder.cancel()
+            preview.pause()
+        }
+        preview.setMuted(false)
+        _state.update { it.copy(voiceover = VoiceoverState(visible = false)) }
+    }
+
+    fun voiceoverPermissionDenied() {
+        _state.update { it.copy(voiceover = it.voiceover.copy(error = "Clippr needs microphone access to record. You can allow it in the system settings for Clippr.")) }
     }
 
     // -----------------------------------------------------------------------------------------
@@ -477,17 +633,20 @@ class EditorViewModel(
             val timelineWasEmpty = project.sequence.allClips.isEmpty()
             val imported = ArrayList<MediaAsset>()
             val failures = ArrayList<String>()
-            for (uri in uris) {
-                deps.access.persistReadPermission(uri)
-                val existing = history?.current?.assets?.firstOrNull { it.uri == uri.toString() }
-                if (existing != null) {
-                    imported += existing
-                    continue
+            var copied = 0
+            val pending = uris.filter { uri -> history?.current?.assets?.none { it.uri == uri.toString() } != false }
+            history?.current?.assets?.filter { a -> uris.any { it.toString() == a.uri } }?.let(imported::addAll)
+            val outcomes = deps.importer.import(pending) { p ->
+                val pct = p.copiedFraction?.let { " ${(it * 100).toInt()}%" } ?: ""
+                val verb = if (p.copiedFraction != null) "Copying" else "Importing"
+                _state.update { it.copy(importStatus = "$verb ${p.displayName}$pct (${p.index + 1}/${p.total})") }
+            }
+            for (o in outcomes) when (o) {
+                is ImportOutcomeMedia.Imported -> {
+                    imported += o.asset
+                    if (o.copied) copied++
                 }
-                when (val r = deps.probe.probe(uri)) {
-                    is ProbeResult.Success -> imported += r.asset
-                    is ProbeResult.Failure -> failures += "${r.displayName}: ${r.reason}"
-                }
+                is ImportOutcomeMedia.Failed -> failures += "${o.displayName}: ${o.reason}"
             }
             val fresh = imported.filter { a -> history?.current?.asset(a.id) == null }
             val commands = ArrayList<EditCommand>()
@@ -499,12 +658,13 @@ class EditorViewModel(
             if (commands.isNotEmpty()) {
                 execute(CompositeCommand(if (fresh.size == 1) "Import media" else "Import ${fresh.size} files", commands))
             }
-            _state.update { s -> s.copy(importing = false, recentAssetIds = s.recentAssetIds + imported.map { it.id }) }
+            _state.update { s -> s.copy(importing = false, importStatus = null, recentAssetIds = s.recentAssetIds + imported.map { it.id }) }
             val summary = buildString {
                 if (imported.isNotEmpty()) {
                     append("Imported ${imported.size} file${if (imported.size == 1) "" else "s"}")
                     if (timelineWasEmpty) append(" and added to the timeline")
                     append('.')
+                    if (copied > 0) append(" $copied came from a cloud app and ${if (copied == 1) "was" else "were"} copied to this device.")
                 }
                 if (failures.isNotEmpty()) {
                     if (isNotEmpty()) append(' ')
@@ -517,22 +677,61 @@ class EditorViewModel(
 
     fun relink(assetId: String, uri: Uri) {
         viewModelScope.launch {
-            deps.access.persistReadPermission(uri)
-            when (val r = deps.probe.probe(uri)) {
-                is ProbeResult.Success -> {
+            _state.update { it.copy(importing = true) }
+            val outcome = deps.importer.import(listOf(uri)) { p ->
+                _state.update { it.copy(importStatus = "Copying ${p.displayName}${p.copiedFraction?.let { f -> " ${(f * 100).toInt()}%" } ?: ""}") }
+            }.single()
+            _state.update { it.copy(importing = false, importStatus = null) }
+            when (outcome) {
+                is ImportOutcomeMedia.Imported -> {
                     val old = history?.current?.asset(assetId) ?: return@launch
-                    if (r.asset.type != old.type) {
+                    val asset = outcome.asset
+                    if (asset.type != old.type) {
                         showMessage("Pick a ${old.type.name.lowercase()} file to replace ${old.displayName}.")
                         return@launch
                     }
-                    if (old.durationUs > 0 && r.asset.durationUs + 1_000 < old.durationUs) {
+                    if (old.durationUs > 0 && asset.durationUs + 1_000 < old.durationUs) {
                         showMessage("The new file is shorter than the original; trimmed clips may read past its end.")
                     }
-                    execute(RelinkAsset(assetId, r.asset.uri, r.asset.displayName))
+                    execute(RelinkAsset(assetId, asset.uri, asset.displayName))
+                    preview.retry()
                     refreshMissingMedia()
                 }
-                is ProbeResult.Failure -> showMessage("Couldn't use that file: ${r.reason}")
+                is ImportOutcomeMedia.Failed -> showMessage("Couldn't use that file: ${outcome.reason}")
             }
+        }
+    }
+
+    /**
+     * Copies every asset that still streams from a cloud app (projects made before 0.2.0) into
+     * Clippr's storage and points the project at the copies, as one undoable step.
+     */
+    fun copyCloudMediaToDevice() {
+        val project = history?.current ?: return
+        val targets = project.assets.filter { it.id in _state.value.cloudAssetIds }
+        if (targets.isEmpty()) return
+        _state.update { it.copy(importing = true) }
+        viewModelScope.launch {
+            val commands = ArrayList<EditCommand>()
+            var failed = 0
+            targets.forEachIndexed { i, asset ->
+                val uri = deps.importer.localize(asset) { f ->
+                    val pct = f?.let { " ${(it * 100).toInt()}%" } ?: ""
+                    _state.update { it.copy(importStatus = "Copying ${asset.displayName}$pct (${i + 1}/${targets.size})") }
+                }
+                if (uri == null) failed++ else commands += RelinkAsset(asset.id, uri.toString(), asset.displayName)
+            }
+            if (commands.isNotEmpty()) execute(CompositeCommand("Copy media to device", commands))
+            _state.update { it.copy(importing = false, importStatus = null) }
+            preview.retry()
+            refreshMissingMedia()
+            showMessage(
+                if (failed == 0) {
+                    "Copied ${commands.size} file${if (commands.size == 1) "" else "s"} to this device."
+                } else {
+                    "Copied ${commands.size}; $failed couldn't be read from the cloud app. Download ${if (failed == 1) "it" else "them"} and relink."
+                },
+            )
         }
     }
 
@@ -540,7 +739,8 @@ class EditorViewModel(
         val project = history?.current ?: return
         viewModelScope.launch {
             val missing = deps.access.findMissing(project.assets)
-            _state.update { it.copy(missingAssetIds = missing) }
+            val cloud = deps.access.findCloudAssets(project.assets.filter { it.id !in missing })
+            _state.update { it.copy(missingAssetIds = missing, cloudAssetIds = cloud) }
             if (missing.isNotEmpty()) {
                 showMessage("${missing.size} media file${if (missing.size == 1) " is" else "s are"} missing. Relink them from the media panel.")
             }
@@ -612,6 +812,7 @@ class EditorViewModel(
 
     /** The editor left the screen: save, stop playback and free hardware decoders. */
     fun onStop() {
+        if (recorder.isRecording || voiceoverJob?.isActive == true) stopVoiceover()
         flushSave()
         preview.pause()
         preview.release()
@@ -623,12 +824,16 @@ class EditorViewModel(
     fun messageShown() = _state.update { it.copy(message = null) }
 
     override fun onCleared() {
+        if (recorder.isRecording) recorder.cancel()
         flushSave()
         preview.destroy()
         super.onCleared()
     }
 
     private fun newId(prefix: String) = "$prefix-${UUID.randomUUID()}"
+
+    private fun previewQualityFromSettings(name: String): PreviewQuality =
+        PreviewQuality.entries.firstOrNull { it.name == name } ?: PreviewQuality.BALANCED
 
     private companion object {
         const val AUTOSAVE_DELAY_MS = 900L

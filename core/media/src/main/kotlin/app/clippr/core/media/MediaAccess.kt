@@ -1,5 +1,6 @@
 package app.clippr.core.media
 
+import android.content.ContentResolver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -31,5 +32,39 @@ class MediaAccess(private val context: Context) {
         context.contentResolver.openFileDescriptor(uri, "r")?.use { true } ?: false
     } catch (e: Exception) {
         false
+    }
+
+    /**
+     * True when [uri] is served by a cloud or streaming app rather than stored on this device.
+     * Such files are streamed on demand and often can't seek reliably, so Clippr copies them.
+     *
+     * Known on-device providers are trusted; any other provider counts as cloud, as does a file
+     * whose descriptor is a pipe (no size), which is how streaming providers usually answer.
+     */
+    fun isCloudDocument(uri: Uri): Boolean {
+        if (uri.scheme == ContentResolver.SCHEME_FILE) return false
+        if (uri.scheme != ContentResolver.SCHEME_CONTENT) return true
+        if (uri.authority !in LOCAL_AUTHORITIES) return true
+        return try {
+            context.contentResolver.openFileDescriptor(uri, "r")?.use { it.statSize < 0 } ?: true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Ids of [assets] that still point at cloud apps (projects from before 0.2.0). */
+    suspend fun findCloudAssets(assets: List<MediaAsset>): Set<String> = withContext(Dispatchers.IO) {
+        assets.filter { isCloudDocument(Uri.parse(it.uri)) }.map { it.id }.toSet()
+    }
+
+    companion object {
+        /** Document providers that serve files stored on the device itself. */
+        val LOCAL_AUTHORITIES = setOf(
+            "com.android.externalstorage.documents",
+            "com.android.providers.media.documents",
+            "com.android.providers.downloads.documents",
+            "media",
+            "com.android.providers.media.photopicker",
+        )
     }
 }

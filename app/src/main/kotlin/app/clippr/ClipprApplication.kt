@@ -2,10 +2,13 @@ package app.clippr
 
 import android.app.Application
 import android.content.ComponentCallbacks2
+import app.clippr.core.database.AppSettings
 import app.clippr.core.database.ClipprDatabase
+import app.clippr.core.database.ExportRepository
 import app.clippr.core.database.ProjectRepository
 import app.clippr.core.media.FrameGrabber
 import app.clippr.core.media.MediaAccess
+import app.clippr.core.media.MediaImporter
 import app.clippr.core.media.MediaProbe
 import app.clippr.core.media.ThumbnailRepository
 import app.clippr.core.media.VideoLibrary
@@ -17,6 +20,8 @@ import app.clippr.feature.export.ExportCoordinator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * Manual dependency container. The graph is small and explicit, so a DI framework would add
@@ -26,24 +31,54 @@ class AppContainer(app: Application) {
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val database: ClipprDatabase by lazy { ClipprDatabase.create(app) }
     val repository: ProjectRepository by lazy { ProjectRepository(database.projectDao()) }
+    val exports: ExportRepository by lazy { ExportRepository(database.exportDao()) }
+    val settings = AppSettings(app)
     val thumbnails = ThumbnailRepository(app)
     val waveforms = WaveformRepository(app)
     val videoLibrary = VideoLibrary(app)
+    val probe = MediaProbe(app)
+    val access = MediaAccess(app)
+    val importer = MediaImporter(app, probe, access) { settings.current.copyCloudFiles }
     val editorDependencies: EditorDependencies by lazy {
         EditorDependencies(
             context = app,
             repository = repository,
-            probe = MediaProbe(app),
-            access = MediaAccess(app),
+            probe = probe,
+            access = access,
             thumbnails = thumbnails,
             waveforms = waveforms,
             appScope = appScope,
             resources = RenderResources.get(app),
             frameGrabber = FrameGrabber(app),
+            importer = importer,
+            settings = settings,
         )
     }
     val exportCoordinator: ExportCoordinator by lazy {
-        ExportCoordinator(app, ExportEngine(app), videoLibrary, appScope)
+        ExportCoordinator(app, ExportEngine(app), videoLibrary, appScope) { video ->
+            // Keep a copy of the project's thumbnail so the export still has one if the
+            // project changes or is deleted later.
+            val thumb = withContext(Dispatchers.IO) {
+                val source = repository.thumbnailPath(video.projectId)?.let(::File)?.takeIf { it.exists() }
+                source?.let {
+                    val dir = File(app.filesDir, "export-thumbnails").apply { mkdirs() }
+                    val target = File(dir, "${video.displayName}.jpg")
+                    runCatching { it.copyTo(target, overwrite = true) }.getOrNull()?.absolutePath
+                }
+            }
+            exports.add(
+                projectId = video.projectId,
+                projectName = video.projectName,
+                uri = video.uri.toString(),
+                displayName = video.displayName,
+                width = video.width,
+                height = video.height,
+                frameRate = video.frameRate,
+                durationUs = video.durationUs,
+                sizeBytes = video.sizeBytes,
+                thumbnailPath = thumb,
+            )
+        }
     }
 }
 

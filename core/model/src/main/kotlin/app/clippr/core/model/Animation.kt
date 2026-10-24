@@ -49,15 +49,19 @@ data class VisualEffects(
     val grain: Float = 0f,
     val fadeInUs: Long = 0L,
     val fadeOutUs: Long = 0L,
+    /** Stylized shader effects, applied in order (see [StyleEffectType]). */
+    val styles: List<StyleEffect> = emptyList(),
 ) {
     val hasFades: Boolean get() = fadeInUs > 0 || fadeOutUs > 0
 
     fun sanitized() = copy(
-        blur = blur.coerceIn(0f, 1f),
-        vignette = vignette.coerceIn(0f, 1f),
-        grain = grain.coerceIn(0f, 1f),
+        blur = blur.finiteOr(0f).coerceIn(0f, 1f),
+        vignette = vignette.finiteOr(0f).coerceIn(0f, 1f),
+        grain = grain.finiteOr(0f).coerceIn(0f, 1f),
         fadeInUs = fadeInUs.coerceAtLeast(0),
         fadeOutUs = fadeOutUs.coerceAtLeast(0),
+        // One instance per type; later duplicates are dropped.
+        styles = styles.distinctBy { it.type }.map { it.sanitized() },
     )
 
     companion object {
@@ -145,7 +149,7 @@ object Animation {
      * so edits made while animating are never lost.
      */
     fun editTransformAt(clip: Clip, sourceUs: Long, toleranceUs: Long, edit: (Transform) -> Transform): Clip {
-        if (clip.keyframes.isEmpty()) return clip.copy(transform = edit(clip.transform))
+        if (clip.keyframes.isEmpty()) return clip.copy(transform = edit(clip.transform).sanitized())
         val current = transformAt(clip, sourceUs)
         val edited = edit(current).sanitized()
         // Crop and framing are not animated: apply them to the base transform.

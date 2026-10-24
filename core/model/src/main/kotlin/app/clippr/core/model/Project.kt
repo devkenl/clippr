@@ -76,8 +76,9 @@ enum class AspectRatioPreset(val width: Int, val height: Int, val label: String)
 enum class MediaType { VIDEO, IMAGE, AUDIO }
 
 /**
- * An imported source file. Clippr never copies or modifies source media: [uri] points to the
- * user's original file (a persisted Storage Access Framework permission on Android).
+ * An imported source file. Clippr never modifies source media. [uri] points to the user's
+ * original file (a persisted Storage Access Framework permission on Android), or, for files
+ * picked from cloud apps such as Google Drive, to a private copy Clippr made on import.
  */
 data class MediaAsset(
     val id: String,
@@ -243,7 +244,7 @@ data class Crop(
     val isNone: Boolean get() = left == 0f && top == 0f && right == 0f && bottom == 0f
 
     fun sanitized(): Crop {
-        fun c(v: Float) = v.coerceIn(0f, MAX_EDGE)
+        fun c(v: Float) = v.finiteOr(0f).coerceIn(0f, MAX_EDGE)
         var l = c(left)
         var r = c(right)
         var t = c(top)
@@ -277,16 +278,20 @@ data class Transform(
     val opacity: Float = 1f,
     val crop: Crop = Crop.NONE,
     val fit: FitMode = FitMode.FIT,
+    /** Mirror the clip left-right / top-bottom about its own centre. */
+    val flipHorizontal: Boolean = false,
+    val flipVertical: Boolean = false,
 ) {
     val isIdentityPlacement: Boolean
-        get() = positionX == 0f && positionY == 0f && scale == 1f && rotationDegrees == 0f
+        get() = positionX == 0f && positionY == 0f && scale == 1f && rotationDegrees == 0f && !flipHorizontal && !flipVertical
 
+    /** Clamps every value to its valid range; NaN and infinities become the defaults. */
     fun sanitized(): Transform = copy(
-        positionX = positionX.coerceIn(-MAX_OFFSET, MAX_OFFSET),
-        positionY = positionY.coerceIn(-MAX_OFFSET, MAX_OFFSET),
-        scale = scale.coerceIn(MIN_SCALE, MAX_SCALE),
-        rotationDegrees = normalizeDegrees(rotationDegrees),
-        opacity = opacity.coerceIn(0f, 1f),
+        positionX = positionX.finiteOr(0f).coerceIn(-MAX_OFFSET, MAX_OFFSET),
+        positionY = positionY.finiteOr(0f).coerceIn(-MAX_OFFSET, MAX_OFFSET),
+        scale = scale.finiteOr(1f).coerceIn(MIN_SCALE, MAX_SCALE),
+        rotationDegrees = normalizeDegrees(rotationDegrees.finiteOr(0f)),
+        opacity = opacity.finiteOr(1f).coerceIn(0f, 1f),
         crop = crop.sanitized(),
     )
 
@@ -315,7 +320,7 @@ data class ClipAudio(
     val isSilent: Boolean get() = muted || volume <= 0f
 
     fun sanitized(): ClipAudio = copy(
-        volume = volume.coerceIn(0f, 1f),
+        volume = volume.finiteOr(1f).coerceIn(0f, 1f),
         fadeInUs = fadeInUs.coerceAtLeast(0),
         fadeOutUs = fadeOutUs.coerceAtLeast(0),
     )
@@ -346,8 +351,8 @@ data class TextStyle(
     val shadow: Boolean = false,
 ) {
     fun sanitized(): TextStyle = copy(
-        sizeFraction = sizeFraction.coerceIn(0.01f, 0.5f),
-        strokeWidth = strokeWidth.coerceIn(0f, 0.3f),
+        sizeFraction = sizeFraction.finiteOr(0.07f).coerceIn(0.01f, 0.5f),
+        strokeWidth = strokeWidth.finiteOr(0f).coerceIn(0f, 0.3f),
     )
 }
 
@@ -377,3 +382,6 @@ object FontIds {
 
     fun isCustom(id: String): Boolean = id.startsWith(CUSTOM_PREFIX)
 }
+
+/** This value if it is a real number, otherwise [fallback] (guards against NaN and infinity). */
+fun Float.finiteOr(fallback: Float): Float = if (isFinite()) this else fallback

@@ -7,6 +7,9 @@ import app.clippr.core.model.FilterPreset
 import app.clippr.core.model.FontIds
 import app.clippr.core.model.TransformKeyframe
 import app.clippr.core.model.VisualEffects
+import app.clippr.core.model.StyleEffect
+import app.clippr.core.model.StyleEffectType
+import app.clippr.core.model.ProjectRepair
 import app.clippr.core.model.VolumeKeyframe
 import app.clippr.core.model.ClipAudio
 import app.clippr.core.model.Crop
@@ -40,7 +43,16 @@ object ProjectCodec {
 
     fun encode(project: Project): String = Json.write(encodeProject(project))
 
-    fun decode(text: String): Project {
+    /** A decoded project plus the ids of damaged clips that had to be left out. */
+    data class Decoded(val project: Project, val droppedClipIds: List<String>)
+
+    fun decode(text: String): Project = decodeDetailed(text).project
+
+    /**
+     * Decodes [text]. A damaged clip (for example one with an empty source range) is left out
+     * and reported in [Decoded.droppedClipIds] so the rest of the project still opens.
+     */
+    fun decodeDetailed(text: String): Decoded {
         val root = try {
             Json.parse(text) as? JsonValue.Obj ?: throw ProjectFormatException("Root is not an object")
         } catch (e: JsonException) {
@@ -51,8 +63,9 @@ object ProjectCodec {
         if (version < 1 || version > SCHEMA_VERSION) {
             throw ProjectFormatException("Unsupported project version $version (this app supports up to $SCHEMA_VERSION)")
         }
+        val dropped = ArrayList<String>()
         return try {
-            decodeProject(root)
+            Decoded(decodeProject(root, dropped), dropped)
         } catch (e: ProjectFormatException) {
             throw e
         } catch (e: IllegalArgumentException) {
@@ -143,6 +156,9 @@ object ProjectCodec {
             "grain" to json(finite(c.effects.grain)),
             "fadeIn" to json(c.effects.fadeInUs),
             "fadeOut" to json(c.effects.fadeOutUs),
+            "styles" to if (c.effects.styles.isEmpty()) null else jsonArray(
+                c.effects.styles.map { jsonObject("type" to json(it.type.id), "amount" to json(finite(it.amount))) },
+            ),
         ),
     )
 
@@ -176,6 +192,8 @@ object ProjectCodec {
         "rotation" to json(finite(t.rotationDegrees)),
         "opacity" to json(finite(t.opacity)),
         "fit" to json(t.fit.name),
+        "flipH" to if (t.flipHorizontal) json(true) else null,
+        "flipV" to if (t.flipVertical) json(true) else null,
         "crop" to jsonObject(
             "l" to json(finite(t.crop.left)),
             "t" to json(finite(t.crop.top)),
@@ -188,9 +206,9 @@ object ProjectCodec {
 
     // Decoding -------------------------------------------------------------------------------
 
-    private fun decodeProject(o: JsonValue.Obj): Project {
+    private fun decodeProject(o: JsonValue.Obj, dropped: MutableList<String>): Project {
         val settings = o.obj("settings") ?: throw ProjectFormatException("Missing settings")
-        val tracks = o.arr("tracks").mapNotNull { (it as? JsonValue.Obj)?.let(::decodeTrack) }
+        val tracks = o.arr("tracks").mapNotNull { (it as? JsonValue.Obj)?.let { t -> decodeTrack(t, dropped) } }
         return Project(
             id = o.str("id") ?: throw ProjectFormatException("Missing id"),
             name = o.str("name") ?: "Untitled",
@@ -225,19 +243,27 @@ object ProjectCodec {
         )
     }
 
-    private fun decodeTrack(o: JsonValue.Obj): Track? {
+    private fun decodeTrack(o: JsonValue.Obj, dropped: MutableList<String>): Track? {
         val kind = enumOrNull<TrackKind>(o.str("kind")) ?: return null
         return Track(
             id = o.str("id") ?: return null,
             kind = kind,
             name = o.str("name") ?: kind.name.lowercase(),
-            clips = o.arr("clips").mapNotNull { (it as? JsonValue.Obj)?.let(::decodeClip) }.sortedBy { it.timelineStartUs },
+            clips = o.arr("clips").mapNotNull { (it as? JsonValue.Obj)?.let { c -> decodeClip(c, dropped) } }.sortedBy { it.timelineStartUs },
             muted = o.bool("muted"),
             locked = o.bool("locked"),
         )
     }
 
-    private fun decodeClip(o: JsonValue.Obj): Clip? {
+    /** A clip that cannot be decoded (e.g. an empty source range) is dropped, not fatal. */
+    private fun decodeClip(o: JsonValue.Obj, dropped: MutableList<String>): Clip? = try {
+        decodeClipOrThrow(o)?.let(ProjectRepair::repairClip)
+    } catch (e: IllegalArgumentException) {
+        dropped += o.str("id") ?: "?"
+        null
+    }
+
+    private fun decodeClipOrThrow(o: JsonValue.Obj): Clip? {
         val audio = o.obj("audio")
         val text = o.obj("text")
         return Clip(
@@ -280,7 +306,19 @@ object ProjectCodec {
             }.sortedBy { it.sourceUs },
             color = o.obj("color")?.let(::decodeColor) ?: ColorGrade.NONE,
             effects = o.obj("effects")?.let {
-                VisualEffects(it.float("blur"), it.float("vignette"), it.float("grain"), it.long("fadeIn"), it.long("fadeOut")).sanitized()
+                VisualEffects(
+                    blur = it.float("blur"),
+                    vignette = it.float("vignette"),
+                    grain = it.float("grain"),
+                    fadeInUs = it.long("fadeIn"),
+                    fadeOutUs = it.long("fadeOut"),
+                    // Effects added by newer versions are skipped rather than failing the clip.
+                    styles = it.arr("styles").mapNotNull { v ->
+                        (v as? JsonValue.Obj)?.let { e ->
+                            StyleEffectType.fromId(e.str("type"))?.let { type -> StyleEffect(type, e.float("amount", type.defaultAmount)) }
+                        }
+                    },
+                ).sanitized()
             } ?: VisualEffects.NONE,
         )
     }
@@ -317,6 +355,8 @@ object ProjectCodec {
             rotationDegrees = o.float("rotation"),
             opacity = o.float("opacity", 1f),
             fit = enumOrNull<FitMode>(o.str("fit")) ?: FitMode.FIT,
+            flipHorizontal = o.bool("flipH"),
+            flipVertical = o.bool("flipV"),
             crop = if (crop == null) Crop.NONE else Crop(crop.float("l"), crop.float("t"), crop.float("r"), crop.float("b")),
         ).sanitized()
     }

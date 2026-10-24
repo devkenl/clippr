@@ -159,10 +159,27 @@ class ExportEngine(context: Context) {
         val holder = ProgressHolder()
         progressJob?.cancel()
         progressJob = scope.launch {
+            var lastProgress: Float? = -1f
+            var lastChange = SystemClock.elapsedRealtime()
             while (isActive && transformer === t) {
                 val progress = when (t.getProgress(holder)) {
                     Transformer.PROGRESS_STATE_AVAILABLE -> holder.progress / 100f
                     else -> null
+                }
+                val now = SystemClock.elapsedRealtime()
+                if (progress != lastProgress) {
+                    lastProgress = progress
+                    lastChange = now
+                } else if (now - lastChange > STALL_TIMEOUT_MS) {
+                    // Nothing has moved for a long time: a source stopped delivering data. Stop
+                    // instead of spinning forever with an empty file.
+                    t.cancel()
+                    transformer = null
+                    outputFile?.delete()
+                    _state.value = ExportState.Failed(
+                        "Export stopped making progress. A media file may have stopped responding (files streamed from cloud apps like Google Drive can do this). Copy the file to your device, relink it and try again.",
+                    )
+                    return@launch
                 }
                 if (_state.value is ExportState.Running) {
                     _state.value = ExportState.Running(progress, elapsed())
@@ -186,10 +203,18 @@ class ExportEngine(context: Context) {
         ExportException.ERROR_CODE_IO_FILE_NOT_FOUND,
         ExportException.ERROR_CODE_IO_NO_PERMISSION,
         -> "A media file used in this project can no longer be opened."
-        else -> e.message ?: "Export failed (${e.errorCodeName})."
+        ExportException.ERROR_CODE_IO_UNSPECIFIED,
+        ExportException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        ExportException.ERROR_CODE_IO_READ_POSITION_OUT_OF_RANGE,
+        -> "A media file stopped responding while exporting. Files streamed from cloud apps (like Google Drive) do this; copy them to the device and relink."
+        ExportException.ERROR_CODE_DECODER_INIT_FAILED,
+        ExportException.ERROR_CODE_DECODING_FAILED,
+        -> "The device's video decoder failed on one of the clips (${e.errorCodeName}). Try a lower export resolution."
+        else -> listOfNotNull(e.message, e.cause?.message).distinct().joinToString(": ").ifEmpty { "Export failed (${e.errorCodeName})." }
     }
 
     private companion object {
         const val PROGRESS_INTERVAL_MS = 250L
+        const val STALL_TIMEOUT_MS = 300_000L
     }
 }

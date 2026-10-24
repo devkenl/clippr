@@ -21,6 +21,7 @@ import app.clippr.core.model.edit.UpdateClip
 import app.clippr.core.model.time.FrameRate
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import kotlin.test.assertFailsWith
 
 class ProjectCodecTest {
@@ -88,13 +89,13 @@ class ProjectCodecTest {
         }
         assertFailsWith<ProjectFormatException> { ProjectCodec.decode("{not json") }
         assertFailsWith<ProjectFormatException> { ProjectCodec.decode("""{"format":"other"}""") }
-        // A clip with an empty source range is corrupt and must not load silently.
-        assertFailsWith<ProjectFormatException> {
-            ProjectCodec.decode(
-                """{"format":"clippr.project","schemaVersion":1,"id":"x","settings":{"width":2,"height":2},
-                   "tracks":[{"id":"v","kind":"VIDEO","clips":[{"id":"c","assetId":"a","start":0,"in":5,"out":5}]}]}""",
-            )
-        }
+        // A clip with an empty source range is corrupt: it is left out and reported, not loaded silently.
+        val decoded = ProjectCodec.decodeDetailed(
+            """{"format":"clippr.project","schemaVersion":1,"id":"x","settings":{"width":2,"height":2},
+               "tracks":[{"id":"v","kind":"VIDEO","clips":[{"id":"c","assetId":"a","start":0,"in":5,"out":5}]}]}""",
+        )
+        assertEquals(listOf("c"), decoded.droppedClipIds)
+        assertTrue(decoded.project.sequence.allClips.isEmpty())
     }
 
     @Test

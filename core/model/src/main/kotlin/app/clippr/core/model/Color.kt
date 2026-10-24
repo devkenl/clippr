@@ -38,14 +38,14 @@ data class ColorGrade(
             temperature == 0f && tint == 0f && (filter == FilterPreset.NONE || filterStrength == 0f) && lutId == null
 
     fun sanitized() = copy(
-        exposure = exposure.coerceIn(-2f, 2f),
-        contrast = contrast.coerceIn(-1f, 1f),
-        highlights = highlights.coerceIn(-1f, 1f),
-        shadows = shadows.coerceIn(-1f, 1f),
-        saturation = saturation.coerceIn(-1f, 1f),
-        temperature = temperature.coerceIn(-1f, 1f),
-        tint = tint.coerceIn(-1f, 1f),
-        filterStrength = filterStrength.coerceIn(0f, 1f),
+        exposure = exposure.finiteOr(0f).coerceIn(-2f, 2f),
+        contrast = contrast.finiteOr(0f).coerceIn(-1f, 1f),
+        highlights = highlights.finiteOr(0f).coerceIn(-1f, 1f),
+        shadows = shadows.finiteOr(0f).coerceIn(-1f, 1f),
+        saturation = saturation.finiteOr(0f).coerceIn(-1f, 1f),
+        temperature = temperature.finiteOr(0f).coerceIn(-1f, 1f),
+        tint = tint.finiteOr(0f).coerceIn(-1f, 1f),
+        filterStrength = filterStrength.finiteOr(1f).coerceIn(0f, 1f),
     )
 
     companion object {

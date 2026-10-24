@@ -5,8 +5,10 @@ import app.clippr.core.model.ColorGrade
 import app.clippr.core.model.MediaAsset
 import app.clippr.core.model.MediaType
 import app.clippr.core.model.Project
+import app.clippr.core.model.ProjectRepair
 import app.clippr.core.model.ProjectSettings
 import app.clippr.core.model.TextStyle
+import app.clippr.core.model.finiteOr
 import app.clippr.core.model.Track
 import app.clippr.core.model.TrackKind
 import app.clippr.core.model.time.US_PER_SECOND
@@ -389,8 +391,11 @@ class UpdateClip(
             transform = proposed.transform.sanitized(),
             audio = proposed.audio.sanitized(),
             text = if (clip.isText) (proposed.text ?: clip.text)?.sanitized() else null,
-            keyframes = proposed.keyframes.sortedBy { it.sourceUs },
-            volumeKeyframes = proposed.volumeKeyframes.sortedBy { it.sourceUs },
+            keyframes = proposed.keyframes.map(ProjectRepair::repairKeyframe).sortedBy { it.sourceUs }.distinctBy { it.sourceUs },
+            volumeKeyframes = proposed.volumeKeyframes
+                .map { it.copy(volume = it.volume.finiteOr(1f).coerceIn(0f, 1f)) }
+                .sortedBy { it.sourceUs }
+                .distinctBy { it.sourceUs },
             color = if (clip.isText) ColorGrade.NONE else proposed.color.sanitized(),
             effects = proposed.effects.sanitized(),
         )

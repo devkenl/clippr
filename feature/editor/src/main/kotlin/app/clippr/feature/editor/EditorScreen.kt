@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
@@ -114,6 +116,16 @@ fun EditorScreen(
         lutLauncher.launch(arrayOf("*/*"))
     }
     val requestImport = { importLauncher.launch(ImportMimeTypes) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        viewModel.openVoiceover()
+        if (!granted) viewModel.voiceoverPermissionDenied()
+    }
+    val requestVoiceover: () -> Unit = {
+        val granted = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (granted) viewModel.openVoiceover() else micPermission.launch(android.Manifest.permission.RECORD_AUDIO)
+    }
     val requestRelink = { asset: MediaAsset ->
         relinkTarget = asset
         relinkLauncher.launch(
@@ -139,7 +151,7 @@ fun EditorScreen(
     }
     // Keep the screen awake while playing.
     val view = LocalView.current
-    LaunchedEffect(preview.isPlaying) { view.keepScreenOn = preview.isPlaying }
+    LaunchedEffect(preview.playRequested, ui.voiceover.recording) { view.keepScreenOn = preview.playRequested || ui.voiceover.recording }
 
     val leave = {
         viewModel.flushSave()
@@ -162,7 +174,7 @@ fun EditorScreen(
             else -> {
                 val viewport = rememberTimelineViewport()
                 val media = rememberTimelineMediaCache(viewModel.thumbnails, viewModel.waveforms)
-                val actions = rememberEditorActions(viewModel, project, ui, preview, viewport, onExport, requestImport, requestFont, requestLut)
+                val actions = rememberEditorActions(viewModel, project, ui, preview, viewport, onExport, requestImport, requestFont, requestLut, requestVoiceover)
                 BoxWithConstraints(
                     Modifier
                         .fillMaxSize()
@@ -178,6 +190,32 @@ fun EditorScreen(
                     }
                 }
                 LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+
+                // Overlays: cloud media warning, preview errors and the voiceover recorder.
+                Column(
+                    Modifier.align(Alignment.TopCenter).padding(top = 64.dp, start = 12.dp, end = 12.dp).widthIn(max = 640.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    if (ui.cloudAssetIds.isNotEmpty() && !fullscreen) {
+                        CloudMediaBanner(ui.cloudAssetIds.size, ui.importing, ui.importStatus, viewModel::copyCloudMediaToDevice)
+                    } else if (ui.importStatus != null) {
+                        ImportStatusChip(ui.importStatus)
+                    }
+                    preview.error?.let { message ->
+                        PreviewErrorCard(message, onRetry = viewModel.preview::retry, onDismiss = viewModel.preview::clearError)
+                    }
+                }
+                if (ui.voiceover.visible) {
+                    VoiceoverCard(
+                        state = ui.voiceover,
+                        timecode = app.clippr.core.model.time.Timecode.format(ui.voiceover.startUs.takeIf { ui.voiceover.recording || ui.voiceover.countdown > 0 } ?: preview.positionUs, project.settings.frameRate),
+                        onRecord = viewModel::startVoiceover,
+                        onStop = viewModel::stopVoiceover,
+                        onClose = viewModel::closeVoiceover,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 72.dp, start = 12.dp, end = 12.dp),
+                    )
+                }
             }
         }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 96.dp))
@@ -198,6 +236,7 @@ internal class EditorActions(
     val inspector: InspectorActions,
     val fonts: List<FontChoice>,
     val clipMenu: (String) -> List<ClipMenuItem>,
+    val voiceover: () -> Unit,
 )
 
 @Composable
@@ -211,6 +250,7 @@ private fun rememberEditorActions(
     requestImport: () -> Unit,
     requestFont: () -> Unit,
     requestLut: () -> Unit,
+    requestVoiceover: () -> Unit,
 ): EditorActions {
     val inspector = InspectorActions(
         onLive = vm::liveUpdate,
@@ -257,6 +297,7 @@ private fun rememberEditorActions(
         inspector = inspector,
         fonts = fonts,
         clipMenu = clipMenu,
+        voiceover = requestVoiceover,
     )
 }
 
@@ -272,7 +313,7 @@ private fun handleShortcut(
     val ctrl = event.isCtrlPressed || event.isMetaPressed
     val shift = event.isShiftPressed
     when (event.key) {
-        Key.Spacebar, Key.K -> vm.preview.togglePlayPause()
+        Key.Spacebar, Key.K -> if (ui.voiceover.recording) vm.stopVoiceover() else vm.preview.togglePlayPause()
         Key.S -> if (!ctrl) actions.split() else return false
         Key.B -> if (ctrl) actions.split() else return false
         Key.Delete, Key.Backspace -> actions.delete(shift)
@@ -297,7 +338,8 @@ private fun handleShortcut(
         Key.F -> toggleFullscreen()
         Key.E -> if (ctrl) actions.export() else return false
         Key.D -> if (ctrl) actions.duplicate() else return false
-        Key.Escape -> vm.select(null)
+        Key.Escape -> if (ui.voiceover.visible) vm.closeVoiceover() else vm.select(null)
+        Key.R -> if (!ctrl) actions.voiceover() else return false
         else -> return false
     }
     return true
@@ -375,7 +417,8 @@ private fun TabletEditor(
                             modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                         TransportBar(
-                            isPlaying = preview.isPlaying,
+                            isPlaying = preview.playRequested,
+            buffering = preview.isBuffering,
                             positionUs = preview.positionUs,
                             durationUs = project.durationUs,
                             frameRate = project.settings.frameRate,
@@ -421,6 +464,7 @@ private fun TabletEditor(
                     onZoomIn = { actions.zoom(1.25f) },
                     onZoomOut = { actions.zoom(0.8f) },
                     onFit = actions.fit,
+                    onVoiceover = actions.voiceover,
                 )
                 EditorTimeline(vm, project, ui, preview, viewport, media, actions, TimelineMetrics.Tablet, Modifier.weight(timelineFraction).fillMaxWidth())
             }
@@ -513,7 +557,8 @@ private fun PhoneEditor(
             modifier = Modifier.fillMaxWidth().weight(0.42f),
         )
         TransportBar(
-            isPlaying = preview.isPlaying,
+            isPlaying = preview.playRequested,
+            buffering = preview.isBuffering,
             positionUs = preview.positionUs,
             durationUs = project.durationUs,
             frameRate = project.settings.frameRate,
@@ -542,6 +587,7 @@ private fun PhoneEditor(
             onZoomIn = { actions.zoom(1.25f) },
             onZoomOut = { actions.zoom(0.8f) },
             onFit = actions.fit,
+            onVoiceover = actions.voiceover,
         )
         EditorTimeline(vm, project, ui, preview, viewport, media, actions, TimelineMetrics.Phone, Modifier.weight(0.58f).fillMaxWidth())
         ToolDrawer(
@@ -554,6 +600,7 @@ private fun PhoneEditor(
             onFreeze = actions.freeze,
             onEdit = { sheet = PhoneSheet.INSPECTOR },
             onProject = { sheet = PhoneSheet.PROJECT },
+            onVoiceover = actions.voiceover,
         )
     }
 
@@ -626,7 +673,8 @@ private fun FullscreenPreview(
             modifier = Modifier.weight(1f).fillMaxWidth(),
         )
         TransportBar(
-            isPlaying = preview.isPlaying,
+            isPlaying = preview.playRequested,
+            buffering = preview.isBuffering,
             positionUs = preview.positionUs,
             durationUs = project.durationUs,
             frameRate = project.settings.frameRate,
