@@ -3,8 +3,7 @@
 # visible on the run summary page (and through the API) without downloading the full log.
 log="${1:-gradle.log}"
 [ -f "$log" ] || exit 0
-grep -E '^e: |^w: .*deprecated|error:|What went wrong|^> |FAILED|Caused by|Could not resolve|Unresolved' "$log" \
-  | grep -v -E '^> Task .* (UP-TO-DATE|NO-SOURCE|FROM-CACHE|SKIPPED)$' \
+grep -E '^e: |error:|What went wrong|^> [^T]|^> Task .*FAILED|Caused by|Could not resolve|Unresolved' "$log" \
   | sed -E 's#file:///home/runner/work/[^/]+/[^/]+/##' \
   | head -300 > errors.txt
 total=$(wc -l < errors.txt)

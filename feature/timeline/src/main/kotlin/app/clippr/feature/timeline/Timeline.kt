@@ -58,6 +58,9 @@ import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.PointerInputChange
+import androidx.compose.ui.input.pointer.isCtrlPressed
+import androidx.compose.ui.input.pointer.isMetaPressed
+import androidx.compose.ui.input.pointer.isShiftPressed
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.input.pointer.util.VelocityTracker
@@ -902,7 +905,7 @@ private fun DrawScope.drawClip(
                 style = TextStyle(color = textColor.copy(alpha = alpha), fontSize = 11.sp, fontWeight = FontWeight.Medium),
                 overflow = TextOverflow.Ellipsis,
                 maxLines = 1,
-                size = IntSize(availableW, (14.sp.toPx() * 1.4f).roundToInt()),
+                size = Size(availableW.toFloat(), 14.sp.toPx() * 1.4f),
             )
             val badges = buildList {
                 if (clip.speed != 1f) add("${trimFloat(clip.speed)}×")
@@ -917,7 +920,7 @@ private fun DrawScope.drawClip(
                     style = TextStyle(color = colors.textSecondary.copy(alpha = alpha), fontSize = 10.sp, fontFeatureSettings = "tnum"),
                     overflow = TextOverflow.Ellipsis,
                     maxLines = 1,
-                    size = IntSize(availableW, (12.sp.toPx() * 1.4f).roundToInt()),
+                    size = Size(availableW.toFloat(), 12.sp.toPx() * 1.4f),
                 )
             }
         }
