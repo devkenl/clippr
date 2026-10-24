@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="clippr_background">#FF101116</color>
+    <color name="clippr_accent">#FFA78BFA</color>
+
+    <style name="Theme.Clippr" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/clippr_background</item>
+        <item name="android:colorAccent">@color/clippr_accent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

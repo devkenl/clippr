@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Clippr mark: a play shape cut by a diagonal edit line. Drawn inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#A78BFA"
+        android:pathData="M42,33.5 C42,31.2 44.5,29.8 46.4,31 L76,49.5 C77.9,50.7 77.9,53.3 76,54.5 L46.4,73 C44.5,74.2 42,72.8 42,70.5 Z" />
+    <path
+        android:strokeColor="#101116"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M38,68 L66,40" />
+</vector>

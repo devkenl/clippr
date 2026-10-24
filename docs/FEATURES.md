@@ -1,0 +1,92 @@
+# Feature status
+
+An honest checklist. Status legend:
+
+- ✅ **Tested** — implemented and verified by automated tests that were actually run.
+- 🟡 **Written** — implemented in code, but not yet compiled or run on a device (the first
+  build environment had no Android SDK; see IMPLEMENTATION_PLAN.md). Treat as unverified.
+- ⬜ **Not implemented** — planned; not represented in the UI as working.
+
+## Editing engine (`core:model`)
+
+| Feature | Status |
+|---|---|
+| Microsecond time model, exact rational frame rates, frame snapping, timecode | ✅ |
+| Project / sequence / track / clip / asset model with separate source and timeline time | ✅ |
+| Insert, move (incl. between compatible tracks), reorder by dropping | ✅ |
+| Trim start/end with source, neighbour and minimum-duration clamping | ✅ |
+| Split at time (speed-safe), delete, ripple delete | ✅ |
+| Speed change with neighbour push | ✅ |
+| Track add/remove, mute, lock (locked tracks reject edits) | ✅ |
+| Snapshot undo/redo with labels and history limit | ✅ |
+| Snapping to playhead and clip edges | ✅ |
+| Render planning (gaps, padding, muting, missing media, fades, text windows) | ✅ |
+| Transform geometry (fit/fill, crop, scale, clockwise rotation, position) | ✅ |
+| Versioned JSON project format with exact 64-bit times | ✅ |
+| Invariant checker + randomized edit testing | ✅ |
+
+## Application (Android)
+
+| Feature | Status |
+|---|---|
+| Home: project grid, thumbnails, create (name, aspect, resolution, fps), rename, duplicate, delete | 🟡 |
+| Room persistence, autosave, save indicator, save on background/close | 🟡 |
+| Media import via Storage Access Framework (video, photo, audio), persisted read access | 🟡 |
+| Metadata probing; unreadable files reported, not imported | 🟡 |
+| Thumbnails (memory + disk cache), audio waveforms (decoded peaks, disk cache) | 🟡 |
+| Missing-media detection and relinking | 🟡 |
+| Tablet layout: top bar, media panel, preview, inspector, resizable timeline, focus mode | 🟡 |
+| Phone layout: preview / timeline / tool drawer, media and inspector as sheets | 🟡 |
+| Timeline: ruler, track headers, thumbnails, waveforms, playhead, trim handles, snap line | 🟡 |
+| Timeline gestures: tap/shift-tap select, drag/long-press move, trim, pan + fling, pinch zoom, two-finger pan, mouse wheel, Ctrl+wheel zoom, double-tap fit | 🟡 |
+| Preview: CompositionPlayer playback, scrubbing, frame step, fullscreen, preview quality | 🟡 |
+| Preview overlays: selection box, drag/pinch/rotate the selected clip, double-tap reset, safe areas, 9:16 / 1:1 / 4:5 guides | 🟡 |
+| Inspector: position, scale, rotation, opacity, fit/fill, crop, speed presets, volume, mute, fade in/out, text content/size/colour/background/alignment/bold, project format | 🟡 |
+| Text overlays (rendered identically in preview and export) | 🟡 |
+| Keyboard shortcuts (see below) | 🟡 |
+| Export: MP4 (H.264 + AAC), 720p/1080p/4K and 24–60 fps filtered by device encoder support, quality presets, real progress, cancel, save to Movies/Clippr, share, play | 🟡 |
+
+## Not implemented yet
+
+| Feature | Status |
+|---|---|
+| Multiple overlapping video layers, picture-in-picture | ⬜ (one composited video track in the MVP) |
+| Transitions (cross dissolve, fade to black between clips) | ⬜ |
+| Keyframes | ⬜ |
+| Colour workspace, LUTs, scopes | ⬜ |
+| Effects (blur, sharpen, glow, grain, vignette, chroma key, masks) | ⬜ |
+| Audio EQ, panning, noise reduction, peak meters | ⬜ |
+| Ripple/roll/slip/slide tools, markers, nested sequences, compound clips, adjustment layers | ⬜ |
+| Drag and drop from media panel to timeline (tap adds at the playhead instead) | ⬜ |
+| Background export with a foreground service | ⬜ (export continues while you stay in the app) |
+| Proxy media, custom fonts, light theme, HEVC/AV1 export | ⬜ |
+| Settings screen | ⬜ |
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| Space / K | Play / pause |
+| S, Ctrl+B | Split at playhead |
+| Delete / Backspace | Delete selection (Shift = ripple delete) |
+| Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y | Undo, redo |
+| ← / → | Previous / next frame (Shift = 1 second) |
+| J / L | Back / forward 1 second |
+| Home / End | Go to start / end |
+| = / − | Zoom timeline in / out |
+| \ | Fit timeline |
+| Ctrl+I | Import media |
+| T | Add title |
+| N | Toggle snapping |
+| F | Fullscreen preview |
+| Ctrl+E | Export |
+| Esc | Clear selection |
+
+## Acceptance flow (to verify on a device)
+
+1. Install Clippr. 2. Launch. 3. Create a project. 4. Import two videos (they are placed on the
+timeline automatically when the timeline is empty). 5. See both clips. 6. Play and scrub.
+7. Trim (drag handles of a selected clip) and split (S / Split). 8. Move or reorder (drag a
+selected clip onto the front half of another). 9. Import music, tap it to add at the playhead,
+set its volume in the inspector. 10. Leave and reopen the project. 11. Export to MP4.
+12. Reopen the project and confirm the edits are intact.

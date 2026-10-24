@@ -1,0 +1,45 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Create a 9:16 project
+        2. Import two videos
+        3. ...
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: e.g. Galaxy Tab S11, Android 16
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Clippr version or commit
+    validations:
+      required: true
+  - type: textarea
+    id: media
+    attributes:
+      label: Media involved
+      description: Format, resolution, frame rate and length of the files, if relevant (do not attach private footage).
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output of `adb logcat` around the problem, if you can capture it.
+      render: text
