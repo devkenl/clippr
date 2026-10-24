@@ -687,6 +687,55 @@ object ClipprIcons {
         }
     }
 
+    val Eye by lazy {
+        icon("Eye") {
+            stroke {
+                moveTo(2.5f, 12f)
+                curveTo(4.5f, 7.5f, 8f, 5.5f, 12f, 5.5f)
+                curveTo(16f, 5.5f, 19.5f, 7.5f, 21.5f, 12f)
+                curveTo(19.5f, 16.5f, 16f, 18.5f, 12f, 18.5f)
+                curveTo(8f, 18.5f, 4.5f, 16.5f, 2.5f, 12f)
+                close()
+                circle(12f, 12f, 3f)
+            }
+        }
+    }
+
+    val EyeOff by lazy {
+        icon("EyeOff") {
+            stroke {
+                moveTo(4f, 4f); lineTo(20f, 20f)
+                moveTo(9.9f, 5.8f)
+                curveTo(10.6f, 5.6f, 11.3f, 5.5f, 12f, 5.5f)
+                curveTo(16f, 5.5f, 19.5f, 7.5f, 21.5f, 12f)
+                curveTo(21f, 13.1f, 20.4f, 14.1f, 19.7f, 14.9f)
+                moveTo(16.5f, 17.1f)
+                curveTo(15.1f, 18f, 13.6f, 18.5f, 12f, 18.5f)
+                curveTo(8f, 18.5f, 4.5f, 16.5f, 2.5f, 12f)
+                curveTo(3.4f, 10f, 4.6f, 8.4f, 6.1f, 7.3f)
+            }
+        }
+    }
+
+    val Transition by lazy {
+        icon("Transition") {
+            stroke {
+                roundRect(3f, 6f, 10f, 12f, 2f)
+                roundRect(11f, 6f, 10f, 12f, 2f)
+                moveTo(11f, 6f); lineTo(13f, 18f)
+            }
+        }
+    }
+
+    val PictureInPicture by lazy {
+        icon("PictureInPicture") {
+            stroke {
+                roundRect(3f, 5f, 18f, 14f, 2f)
+            }
+            filled { roundRect(12f, 11f, 7f, 6f, 1f) }
+        }
+    }
+
     // --------------------------------------------------------------------------------------
 
     private fun icon(name: String, block: ImageVector.Builder.() -> Unit): ImageVector =

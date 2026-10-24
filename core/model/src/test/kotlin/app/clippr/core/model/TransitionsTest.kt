@@ -52,8 +52,9 @@ class TransitionsTest {
         plan.layers.forEach { assertEquals(p.durationUs, it.segments.sumOf { s -> s.durationUs }) }
         val b = plan.layers.flatMap { it.segments }.filterIsInstance<VideoSegment.Media>().first { it.clipId == "b" }
         val a = plan.layers.flatMap { it.segments }.filterIsInstance<VideoSegment.Media>().first { it.clipId == "a" }
-        assertEquals(9 * SEC, b.transitionIn!!.startUs)
-        assertEquals(10 * SEC, b.transitionIn!!.endUs)
+        val window = assertNotNull(b.transitionIn)
+        assertEquals(9 * SEC, window.startUs)
+        assertEquals(10 * SEC, window.endUs)
         assertEquals(b.transitionIn, a.transitionOut)
         // Sound crossfades over the same second.
         assertEquals(SEC, b.audio!!.fadeInUs)

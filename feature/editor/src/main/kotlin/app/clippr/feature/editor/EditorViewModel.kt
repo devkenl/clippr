@@ -47,6 +47,7 @@ import app.clippr.core.model.edit.RenameProject
 import app.clippr.core.model.edit.SetClipSpeed
 import app.clippr.core.model.edit.SetTrackLocked
 import app.clippr.core.model.edit.SetTrackMuted
+import app.clippr.core.model.edit.SetTrackHidden
 import app.clippr.core.model.edit.SplitClip
 import app.clippr.core.model.edit.UpdateClip
 import app.clippr.core.render.FontLibrary
@@ -123,6 +124,8 @@ data class EditorUiState(
     /** Progress text while importing or copying files, e.g. "Copying clip.mp4 … 40%". */
     val importStatus: String? = null,
     val voiceover: VoiceoverState = VoiceoverState(),
+    /** Asks the inspector to show a tab (e.g. after tapping a transition on the timeline). */
+    val inspectorRequest: app.clippr.feature.inspector.TabRequest? = null,
 ) {
     val selectedClip: Clip? get() = selectedClipIds.singleOrNull()?.let { project?.sequence?.clip(it) }
 }
@@ -459,8 +462,49 @@ class EditorViewModel(
         execute(SetTrackLocked(trackId, !track.locked))
     }
 
-    fun addAudioTrack() {
-        execute(AddTrack(TrackKind.AUDIO, newId("track")))
+    fun addAudioTrack() = addTrack(TrackKind.AUDIO)
+
+    fun addTrack(kind: TrackKind) {
+        if (execute(AddTrack(kind, newId("track"))) && kind == TrackKind.VIDEO) {
+            showMessage("Added a video layer on top. Clips on it play over the layers below.")
+        }
+    }
+
+    fun toggleTrackHidden(trackId: String) {
+        val track = history?.current?.sequence?.track(trackId) ?: return
+        execute(SetTrackHidden(trackId, !track.hidden))
+    }
+
+    /** Selects the clip a transition leads into and shows the Transition tab. */
+    fun openTransition(clipId: String) {
+        select(clipId)
+        _state.update { it.copy(inspectorRequest = app.clippr.feature.inspector.TabRequest("transition", System.nanoTime())) }
+    }
+
+    /**
+     * Adds a photo or video on a layer above the main video, at the playhead, as a
+     * picture-in-picture in the top-right corner. Uses a free upper layer or creates one.
+     */
+    fun addAsOverlay(asset: MediaAsset) {
+        val project = history?.current ?: return
+        if (asset.type == MediaType.AUDIO) return addToTimeline(asset)
+        val t = currentFrame()
+        val length = if (asset.isUnbounded) DEFAULT_STILL_DURATION_US else asset.durationUs
+        val main = project.sequence.mainVideoTrack?.id
+        val free = project.sequence.videoTracks.firstOrNull { track ->
+            track.id != main && !track.locked &&
+                track.clips.none { it.timelineStartUs < t + length && t < it.timelineEndUs }
+        }
+        val clipId = newId("clip")
+        val commands = buildList<EditCommand> {
+            val trackId = free?.id ?: newId("track").also { add(AddTrack(TrackKind.VIDEO, it)) }
+            add(AddAssetClip(asset.id, clipId, trackId, startUs = t))
+            add(UpdateClip(clipId, "Picture in picture") { it.copy(transform = it.transform.copy(scale = 0.38f, positionX = 0.56f, positionY = 0.56f)) })
+        }
+        if (execute(CompositeCommand("Add overlay", commands))) {
+            _state.update { it.copy(selectedClipIds = setOf(clipId)) }
+            showMessage("Added as an overlay. Drag it in the preview, or pick a layout in the Video tab.")
+        }
     }
 
     fun changeSettings(settings: ProjectSettings) {

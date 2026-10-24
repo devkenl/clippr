@@ -80,6 +80,10 @@ import kotlinx.coroutines.delay
 import java.util.Locale
 import kotlin.math.roundToInt
 
+/** A request to show an inspector tab, e.g. after tapping a transition on the timeline. */
+@Immutable
+data class TabRequest(val tab: String, val nonce: Long)
+
 /** A font the user can pick, with a Compose family to preview its name in. */
 @Immutable
 data class FontChoice(val id: String, val name: String, val family: FontFamily, val isCustom: Boolean)
@@ -97,6 +101,8 @@ class InspectorActions(
     val onSeek: (timelineUs: Long) -> Unit = {},
     val onImportFont: () -> Unit = {},
     val onImportLut: () -> Unit = {},
+    /** Runs a timing edit (e.g. a transition's length) as one undo step. */
+    val onCommand: (app.clippr.core.model.edit.EditCommand) -> Unit = {},
 ) {
     /** A discrete change (toggle, preset): preview and commit at once. */
     fun apply(clipId: String, label: String, update: (Clip) -> Clip) {
@@ -120,13 +126,15 @@ fun Inspector(
     playheadUs: Long = 0L,
     fonts: List<FontChoice> = emptyList(),
     luts: List<String> = emptyList(),
+    /** Asks the inspector to show a tab ("transition", …); [TabRequest.nonce] repeats requests. */
+    tabRequest: TabRequest? = null,
 ) {
     Column(modifier.verticalScroll(rememberScrollState())) {
         if (selectedClip == null) {
             ProjectPanel(project, actions)
         } else {
             val tolerance = project.settings.frameRate.frameDurationUs / 2 + 1
-            ClipPanel(project, selectedClip, project.asset(selectedClip.assetId), actions, KeyContext(selectedClip, playheadUs, tolerance), fonts, luts)
+            ClipPanel(project, selectedClip, project.asset(selectedClip.assetId), actions, KeyContext(selectedClip, playheadUs, tolerance), fonts, luts, tabRequest)
         }
         Spacer(Modifier.height(Spacing.xl))
     }
@@ -141,6 +149,7 @@ private fun ClipPanel(
     key: KeyContext,
     fonts: List<FontChoice>,
     luts: List<String>,
+    tabRequest: TabRequest?,
 ) {
     val c = palette
     val isText = clip.isText
@@ -184,6 +193,7 @@ private fun ClipPanel(
         if (isText) add(InspectorTab.TEXT)
         if (hasVisual && !isText) add(InspectorTab.VIDEO)
         if (isText) add(InspectorTab.PLACEMENT)
+        if (hasVisual && !isText && TransitionContext.of(project, clip) != null) add(InspectorTab.TRANSITION)
         if (hasAudio || type == MediaType.AUDIO) add(InspectorTab.AUDIO)
         if (!isText && type != MediaType.IMAGE) add(InspectorTab.SPEED)
         if (hasVisual) add(InspectorTab.ANIMATION)
@@ -192,6 +202,9 @@ private fun ClipPanel(
     }
     // The chosen tab is remembered across clips; fall back to the first one this clip has.
     var chosen by rememberSaveable { mutableStateOf(InspectorTab.VIDEO) }
+    LaunchedEffect(tabRequest?.nonce) {
+        tabRequest?.let { r -> InspectorTab.entries.firstOrNull { it.name.equals(r.tab, ignoreCase = true) }?.let { chosen = it } }
+    }
     val current = if (chosen in tabs) chosen else tabs.first()
     PillTabs(
         tabs = tabs.map { it.label },
@@ -207,7 +220,9 @@ private fun ClipPanel(
             TextContentSection(clip, actions, fonts)
             TextStyleSection(clip, actions)
         }
+        InspectorTab.TRANSITION -> TransitionContext.of(project, clip)?.let { TransitionTab(it, actions) }
         InspectorTab.VIDEO -> {
+            LayoutSection(project, clip, actions)
             TransformSection(clip, isText = false, actions, key)
             CropSection(clip, actions)
         }
@@ -228,6 +243,7 @@ private enum class InspectorTab(val label: String) {
     TEXT("Text"),
     VIDEO("Video"),
     PLACEMENT("Position"),
+    TRANSITION("Transition"),
     AUDIO("Audio"),
     SPEED("Speed"),
     ANIMATION("Animation"),

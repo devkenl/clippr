@@ -261,6 +261,7 @@ private fun rememberEditorActions(
         onSeek = vm::seek,
         onImportFont = requestFont,
         onImportLut = requestLut,
+        onCommand = { vm.execute(it) },
     )
     val fonts = remember(ui.fonts) {
         ui.fonts.map { f ->
@@ -274,6 +275,12 @@ private fun rememberEditorActions(
         buildList {
             add(ClipMenuItem("Split at playhead", ClipprIcons.Split, enabled = underPlayhead) { vm.splitClip(clipId) })
             add(ClipMenuItem("Duplicate", ClipprIcons.Copy) { vm.duplicateClip(clipId) })
+            val track = project.sequence.trackOfClip(clipId)
+            val index = track?.clips?.indexOfFirst { it.id == clipId } ?: -1
+            if (track?.allowsOverlap == true && index > 0) {
+                val hasTransition = app.clippr.core.model.edit.Overlaps.overlapIn(track.clips, index) > 0
+                add(ClipMenuItem(if (hasTransition) "Edit transition" else "Add transition", ClipprIcons.Transition) { vm.openTransition(clipId) })
+            }
             if (isVideo) add(ClipMenuItem("Freeze frame", ClipprIcons.Freeze, enabled = underPlayhead) { vm.freezeFrame(clipId) })
             add(ClipMenuItem("Delete", ClipprIcons.Trash, destructive = true) { vm.deleteClip(clipId, ripple = false) })
             add(ClipMenuItem("Ripple delete", ClipprIcons.Trash, destructive = true) { vm.deleteClip(clipId, ripple = true) })
@@ -400,6 +407,7 @@ private fun TabletEditor(
                             onRelink = onRelink,
                             onAddText = actions.addText,
                             modifier = Modifier.width(296.dp).fillMaxHeight(),
+                            onAddOverlay = vm::addAsOverlay,
                         )
                     }
                     Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -445,6 +453,7 @@ private fun TabletEditor(
                             fonts = actions.fonts,
                             luts = ui.luts,
                             modifier = Modifier.width(336.dp).fillMaxHeight().background(c.surface),
+                            tabRequest = ui.inspectorRequest,
                         )
                     }
                 }
@@ -500,9 +509,11 @@ private fun EditorTimeline(
         onEdit = { vm.execute(it) },
         onToggleTrackMute = vm::toggleTrackMute,
         onToggleTrackLock = vm::toggleTrackLock,
-        onAddAudioTrack = vm::addAudioTrack,
+        onAddTrack = vm::addTrack,
         modifier = modifier,
         clipMenu = actions.clipMenu,
+        onToggleTrackHidden = vm::toggleTrackHidden,
+        onTransitionTap = vm::openTransition,
     )
 }
 
@@ -526,6 +537,8 @@ private fun PhoneEditor(
 ) {
     val c = palette
     var sheet by rememberSaveable { mutableStateOf<PhoneSheet?>(null) }
+    // Tapping a transition on the timeline opens the inspector at its Transition tab.
+    LaunchedEffect(ui.inspectorRequest?.nonce) { if (ui.inspectorRequest != null) sheet = PhoneSheet.INSPECTOR }
     Column(Modifier.fillMaxSize()) {
         EditorTopBar(
             name = project.name,
@@ -633,13 +646,17 @@ private fun PhoneEditor(
                         sheet = null
                     },
                     modifier = Modifier.fillMaxWidth().height(520.dp),
+                    onAddOverlay = {
+                        vm.addAsOverlay(it)
+                        sheet = null
+                    },
                 )
                 PhoneSheet.INSPECTOR -> {
                     val clip = ui.selectedClip
                     if (clip == null) {
                         Text("Select a clip on the timeline first.", color = c.textSecondary, modifier = Modifier.padding(24.dp))
                     } else {
-                        Inspector(project, clip, actions.inspector, Modifier.fillMaxWidth().height(520.dp), preview.positionUs, actions.fonts, ui.luts)
+                        Inspector(project, clip, actions.inspector, Modifier.fillMaxWidth().height(520.dp), preview.positionUs, actions.fonts, ui.luts, ui.inspectorRequest)
                     }
                 }
                 PhoneSheet.PROJECT -> Inspector(project, null, actions.inspector, Modifier.fillMaxWidth().height(520.dp))

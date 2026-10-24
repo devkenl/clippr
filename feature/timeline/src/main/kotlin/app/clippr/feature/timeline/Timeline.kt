@@ -160,7 +160,8 @@ private data class TrackRow(val track: Track, val topPx: Float, val heightPx: Fl
 
 private sealed interface Hit {
     data class Empty(val row: TrackRow?) : Hit
-    data class OnClip(val clip: Clip, val row: TrackRow) : Hit
+    /** [clip] is the clip under the finger; [transitionInto] is set inside a transition (overlap). */
+    data class OnClip(val clip: Clip, val row: TrackRow, val transitionInto: Clip? = null) : Hit
     data class TrimHandle(val clip: Clip, val row: TrackRow, val start: Boolean) : Hit
 }
 
@@ -200,9 +201,12 @@ fun Timeline(
     onEdit: (EditCommand) -> Unit,
     onToggleTrackMute: (String) -> Unit,
     onToggleTrackLock: (String) -> Unit,
-    onAddAudioTrack: () -> Unit,
+    onAddTrack: (TrackKind) -> Unit,
     modifier: Modifier = Modifier,
     clipMenu: (clipId: String) -> List<ClipMenuItem> = { emptyList() },
+    onToggleTrackHidden: (String) -> Unit = {},
+    /** The transition (overlap) into this clip was tapped. */
+    onTransitionTap: (clipId: String) -> Unit = {},
 ) {
     val c = palette
     val density = LocalDensity.current
@@ -264,7 +268,8 @@ fun Timeline(
                     metrics = metrics,
                     onToggleMute = onToggleTrackMute,
                     onToggleLock = onToggleTrackLock,
-                    onAddAudioTrack = onAddAudioTrack,
+                    onToggleHidden = onToggleTrackHidden,
+                    onAddTrack = onAddTrack,
                     addRowHeight = addRowHeight,
                 )
                 TrackArea(
@@ -284,6 +289,7 @@ fun Timeline(
                     onSelect = onSelect,
                     onEdit = onEdit,
                     clipMenu = clipMenu,
+                    onTransitionTap = onTransitionTap,
                     modifier = Modifier.weight(1f).height(contentHeight),
                 )
             }
@@ -305,7 +311,8 @@ private fun TrackHeaders(
     metrics: TimelineMetrics,
     onToggleMute: (String) -> Unit,
     onToggleLock: (String) -> Unit,
-    onAddAudioTrack: () -> Unit,
+    onToggleHidden: (String) -> Unit,
+    onAddTrack: (TrackKind) -> Unit,
     addRowHeight: Dp,
 ) {
     val c = palette
@@ -329,7 +336,7 @@ private fun TrackHeaders(
                     Text(
                         track.name,
                         style = MaterialTheme.typography.labelMedium,
-                        color = if (track.muted) c.textTertiary else c.textSecondary,
+                        color = if (track.muted || track.hidden) c.textTertiary else c.textSecondary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f),
@@ -341,6 +348,14 @@ private fun TrackHeaders(
                     modifier = if (metrics.compactHeaders) Modifier.fillMaxWidth() else Modifier,
                 ) {
                     val compactStack = row.heightPx < with(density) { 56.dp.toPx() } && metrics.compactHeaders
+                    if (track.kind == TrackKind.VIDEO && !metrics.compactHeaders) {
+                        HeaderToggle(
+                            icon = if (track.hidden) ClipprIcons.EyeOff else ClipprIcons.Eye,
+                            description = if (track.hidden) "Show ${track.name}" else "Hide ${track.name}",
+                            active = track.hidden,
+                            onClick = { onToggleHidden(track.id) },
+                        )
+                    }
                     if (track.kind != TrackKind.TEXT && !compactStack) {
                         HeaderToggle(
                             icon = if (track.muted) ClipprIcons.Mute else ClipprIcons.Volume,
@@ -360,18 +375,38 @@ private fun TrackHeaders(
                 }
             }
         }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(addRowHeight)
-                .clickable(onClickLabel = "Add audio track", onClick = onAddAudioTrack)
-                .padding(horizontal = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(ClipprIcons.Plus, contentDescription = "Add audio track", tint = c.textTertiary, modifier = Modifier.size(16.dp))
-            if (!metrics.compactHeaders) {
-                Spacer(Modifier.width(6.dp))
-                Text("Audio track", style = MaterialTheme.typography.labelMedium, color = c.textTertiary)
+        var addMenu by remember { mutableStateOf(false) }
+        Box {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(addRowHeight)
+                    .clickable(onClickLabel = "Add track") { addMenu = true }
+                    .padding(horizontal = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(ClipprIcons.Plus, contentDescription = "Add track", tint = c.textTertiary, modifier = Modifier.size(16.dp))
+                if (!metrics.compactHeaders) {
+                    Spacer(Modifier.width(6.dp))
+                    Text("Add track", style = MaterialTheme.typography.labelMedium, color = c.textTertiary)
+                }
+            }
+            DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Video layer (on top)") },
+                    leadingIcon = { Icon(ClipprIcons.Layers, null) },
+                    onClick = { addMenu = false; onAddTrack(TrackKind.VIDEO) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Audio track") },
+                    leadingIcon = { Icon(ClipprIcons.Music, null) },
+                    onClick = { addMenu = false; onAddTrack(TrackKind.AUDIO) },
+                )
+                DropdownMenuItem(
+                    text = { Text("Text track") },
+                    leadingIcon = { Icon(ClipprIcons.Text, null) },
+                    onClick = { addMenu = false; onAddTrack(TrackKind.TEXT) },
+                )
             }
         }
     }
@@ -526,6 +561,7 @@ private fun TrackArea(
     onSelect: (String?, Boolean) -> Unit,
     onEdit: (EditCommand) -> Unit,
     clipMenu: (String) -> List<ClipMenuItem>,
+    onTransitionTap: (String) -> Unit,
     modifier: Modifier,
 ) {
     val c = palette
@@ -535,7 +571,7 @@ private fun TrackArea(
     val measurer = rememberTextMeasurer(cacheSize = 128)
 
     val state = rememberUpdatedState(
-        GestureInputs(project, rows, playheadUs, selectedClipIds, snappingEnabled, maxLeftUs, onSelect, onEdit, onDragChange),
+        GestureInputs(project, rows, playheadUs, selectedClipIds, snappingEnabled, maxLeftUs, onSelect, onEdit, onDragChange, onTransitionTap),
     )
     var flingJob by remember { mutableStateOf<Job?>(null) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
@@ -598,7 +634,11 @@ private fun TrackArea(
                             lastTapPos = outcome.change.position
                             val additive = currentEvent.keyboardModifiers.let { it.isShiftPressed || it.isCtrlPressed || it.isMetaPressed }
                             when (hit) {
-                                is Hit.OnClip -> s.onSelect(hit.clip.id, additive)
+                                is Hit.OnClip -> if (hit.transitionInto != null && !additive) {
+                                    s.onTransitionTap(hit.transitionInto.id)
+                                } else {
+                                    s.onSelect(hit.clip.id, additive)
+                                }
                                 is Hit.TrimHandle -> s.onSelect(hit.clip.id, additive)
                                 is Hit.Empty -> if (isDouble) viewport.fit(s.project.durationUs) else s.onSelect(null, false)
                             }
@@ -654,7 +694,7 @@ private fun TrackArea(
         rows.forEachIndexed { index, row ->
             if (index % 2 == 1) drawRect(c.background.copy(alpha = 0.35f), Offset(0f, row.topPx), Size(size.width, row.heightPx))
             drawLine(c.hairline, Offset(0f, row.topPx + row.heightPx), Offset(size.width, row.topPx + row.heightPx), 1f)
-            if (row.track.locked) {
+            if (row.track.locked || row.track.hidden) {
                 drawRect(c.background.copy(alpha = 0.45f), Offset(0f, row.topPx), Size(size.width, row.heightPx))
             }
         }
@@ -690,6 +730,7 @@ private fun TrackArea(
                     measurer = measurer,
                 )
             }
+            drawTransitions(row, selectedClipIds, viewport, c)
         }
         dragging?.snapLineUs?.let { snap ->
             val x = viewport.timeToX(snap)
@@ -741,6 +782,7 @@ private data class GestureInputs(
     val onSelect: (String?, Boolean) -> Unit,
     val onEdit: (EditCommand) -> Unit,
     val setDrag: (DragOp?) -> Unit,
+    val onTransitionTap: (String) -> Unit,
 )
 
 private fun hitTest(pos: Offset, s: GestureInputs, viewport: TimelineViewport, density: androidx.compose.ui.unit.Density): Hit {
@@ -756,10 +798,12 @@ private fun hitTest(pos: Offset, s: GestureInputs, viewport: TimelineViewport, d
             if (abs(pos.x - x1) <= handle && pos.x >= mid) return Hit.TrimHandle(clip, row, start = false)
         }
     }
-    val clip = row.track.clips.firstOrNull {
+    val under = row.track.clips.filter {
         pos.x >= viewport.timeToX(it.timelineStartUs) && pos.x <= viewport.timeToX(it.timelineEndUs)
     }
-    return if (clip != null) Hit.OnClip(clip, row) else Hit.Empty(row)
+    // In a transition two clips overlap: the later (incoming) one is on top.
+    val clip = under.lastOrNull() ?: return Hit.Empty(row)
+    return Hit.OnClip(clip, row, transitionInto = if (under.size >= 2) clip else null)
 }
 
 private fun compatible(track: Track, clip: Clip, project: Project): Boolean =
@@ -887,6 +931,41 @@ private suspend fun androidx.compose.ui.input.pointer.AwaitPointerEventScope.pin
         viewport.scrollBy(-pan.x, maxLeftUs())
         vScroll.dispatchRawDelta(-pan.y)
         ev.changes.forEach { if (it.positionChanged()) it.consume() }
+    }
+}
+
+/**
+ * Vegas-style transition marks: where two clips overlap, a darkened band with the fade-out and
+ * fade-in curves crossing.
+ */
+private fun DrawScope.drawTransitions(row: TrackRow, selected: Set<String>, viewport: TimelineViewport, colors: ClipprColors) {
+    val clips = row.track.clips
+    if (!row.track.allowsOverlap || clips.size < 2) return
+    val inset = 4.dp.toPx()
+    val top = row.topPx + inset
+    val bottom = row.topPx + row.heightPx - inset
+    for (i in 1 until clips.size) {
+        val outgoing = clips[i - 1]
+        val incoming = clips[i]
+        if (incoming.timelineStartUs >= outgoing.timelineEndUs) continue
+        val x0 = viewport.timeToX(incoming.timelineStartUs)
+        val x1 = viewport.timeToX(outgoing.timelineEndUs)
+        if (x1 < 0f || x0 > size.width) continue
+        val w = x1 - x0
+        drawRect(Color.Black.copy(alpha = 0.45f), Offset(x0, top), Size(w, bottom - top))
+        val stroke = 1.5.dp.toPx()
+        val line = if (incoming.id in selected) colors.accent else Color.White.copy(alpha = 0.85f)
+        val fadeOut = androidx.compose.ui.graphics.Path().apply {
+            moveTo(x0, top)
+            cubicTo(x0 + w * 0.5f, top, x0 + w * 0.5f, bottom, x1, bottom)
+        }
+        val fadeIn = androidx.compose.ui.graphics.Path().apply {
+            moveTo(x0, bottom)
+            cubicTo(x0 + w * 0.5f, bottom, x0 + w * 0.5f, top, x1, top)
+        }
+        drawPath(fadeOut, line, style = Stroke(stroke))
+        drawPath(fadeIn, line, style = Stroke(stroke))
+        drawRect(line, Offset(x0, top), Size(w, bottom - top), style = Stroke(1.dp.toPx()))
     }
 }
 

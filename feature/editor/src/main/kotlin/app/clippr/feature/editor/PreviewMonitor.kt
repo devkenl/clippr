@@ -268,15 +268,18 @@ private data class TransformInputs(
     val onSelect: (String?) -> Unit,
 )
 
-/** Topmost visible clip at [point]: text overlays first, then the main video clip. */
+/** Topmost visible clip at [point]: text overlays first, then video layers from the top down. */
 private fun hitClip(project: Project, timeUs: Long, point: Offset, size: Size, fonts: FontLibrary?): Clip? {
     val textHit = project.sequence.tracks
         .filter { it.kind == TrackKind.TEXT }
         .mapNotNull { it.clipAt(timeUs) }
         .lastOrNull { frameFor(project, it, timeUs, size, fonts)?.contains(point.x, point.y) == true }
     if (textHit != null) return textHit
-    val video = project.sequence.mainVideoTrack?.clipAt(timeUs) ?: return null
-    return video.takeIf { frameFor(project, it, timeUs, size, fonts)?.contains(point.x, point.y) == true }
+    return project.sequence.videoTracks
+        .filter { !it.hidden }
+        .firstNotNullOfOrNull { track ->
+            track.clipAt(timeUs)?.takeIf { frameFor(project, it, timeUs, size, fonts)?.contains(point.x, point.y) == true }
+        }
 }
 
 private fun DrawScope.drawSelection(frame: ClipFrame, accent: Color, editable: Boolean) {

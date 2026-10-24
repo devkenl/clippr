@@ -60,8 +60,9 @@ import app.clippr.core.ui.theme.palette
 private enum class MediaFilter(val label: String) { ALL("All"), VIDEO("Videos"), PHOTO("Photos"), AUDIO("Audio") }
 
 /**
- * Imported media for the project. Tap an item to place it at the playhead. Missing files show a
- * relink action. The Text tab adds titles.
+ * Imported media for the project. Tap an item to place it at the playhead on the main video track,
+ * or its picture-in-picture button to add it on a layer above. Missing files show a relink
+ * action. The Text tab adds titles.
  */
 @Composable
 fun MediaPanel(
@@ -75,6 +76,8 @@ fun MediaPanel(
     onRelink: (MediaAsset) -> Unit,
     onAddText: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Adds a photo or video on a layer above the main video (picture in picture). */
+    onAddOverlay: ((MediaAsset) -> Unit)? = null,
 ) {
     val c = palette
     var tab by rememberSaveable { mutableStateOf(0) }
@@ -152,6 +155,7 @@ fun MediaPanel(
                         thumbnails = thumbnails,
                         onAdd = { onAdd(asset) },
                         onRelink = { onRelink(asset) },
+                        onAddOverlay = onAddOverlay?.takeIf { asset.type != MediaType.AUDIO }?.let { f -> { f(asset) } },
                     )
                 }
             }
@@ -195,6 +199,7 @@ private fun MediaTile(
     thumbnails: ThumbnailRepository,
     onAdd: () -> Unit,
     onRelink: () -> Unit,
+    onAddOverlay: (() -> Unit)? = null,
 ) {
     val c = palette
     val thumb by produceState<Bitmap?>(null, asset.uri, missing) {
@@ -259,6 +264,20 @@ private fun MediaTile(
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(if (used) ClipprIcons.Check else ClipprIcons.Plus, contentDescription = null, tint = if (used) c.success else c.textPrimary, modifier = Modifier.size(14.dp))
+                }
+                if (onAddOverlay != null) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopStart)
+                            .padding(6.dp)
+                            .size(30.dp)
+                            .clip(CircleShape)
+                            .background(c.background.copy(alpha = 0.7f))
+                            .clickable(role = Role.Button, onClickLabel = "Add ${asset.displayName} as an overlay layer", onClick = onAddOverlay),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(ClipprIcons.PictureInPicture, contentDescription = "Add as overlay", tint = c.textPrimary, modifier = Modifier.size(16.dp))
+                    }
                 }
             }
         }

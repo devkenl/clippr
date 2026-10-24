@@ -67,6 +67,7 @@ internal fun EffectsTab(clip: Clip, actions: InspectorActions) {
     val fx = clip.effects
     fun live(label: String, f: (VisualEffects) -> VisualEffects) = actions.onLive(clip.id, label) { it.copy(effects = f(it.effects)) }
 
+    ChromaKeySection(clip, actions)
     val basicActive = fx.blur > 0f || fx.vignette > 0f || fx.grain > 0f
     if (fx.styles.isNotEmpty()) {
         PanelSection("Applied effects", ClipprIcons.Sparkle, initiallyExpanded = true) {

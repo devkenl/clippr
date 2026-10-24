@@ -43,6 +43,23 @@ internal object ShaderEffects {
         }
     }
 
+    private const val HEADER = """#version 100
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+uniform sampler2D uTexSampler;
+uniform float uAmount;
+uniform float uTime;
+uniform float uAspect;
+uniform vec2 uUnit;
+varying vec2 vTexSamplingCoord;
+float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+vec4 tex(vec2 p) { return texture2D(uTexSampler, p); }
+"""
+
     /**
      * Hides part of a clip during a wipe-like transition (see [TransitionMath.mask]). The edge is
      * softened over a few reference pixels.
@@ -142,22 +159,6 @@ void main() {
   }
 }"""
 
-    private const val HEADER = """#version 100
-#ifdef GL_FRAGMENT_PRECISION_HIGH
-precision highp float;
-#else
-precision mediump float;
-#endif
-uniform sampler2D uTexSampler;
-uniform float uAmount;
-uniform float uTime;
-uniform float uAspect;
-uniform vec2 uUnit;
-varying vec2 vTexSamplingCoord;
-float hash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
-float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-vec4 tex(vec2 p) { return texture2D(uTexSampler, p); }
-"""
 
     fun fragmentFor(type: StyleEffectType): String = HEADER + when (type) {
         StyleEffectType.SHARPEN -> """
