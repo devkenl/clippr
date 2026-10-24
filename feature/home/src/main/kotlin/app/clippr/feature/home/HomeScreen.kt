@@ -62,7 +62,7 @@ import app.clippr.core.model.AspectRatioPreset
 import app.clippr.core.model.ProjectSettings
 import app.clippr.core.model.ProjectTemplate
 import app.clippr.core.model.time.FrameRate
-import app.clippr.core.ui.components.ClipprLogo
+import app.clippr.core.ui.components.ClipprLockup
 import app.clippr.core.ui.components.PillTabs
 import app.clippr.core.ui.components.PrimaryButton
 import app.clippr.core.ui.components.SegmentedChoice
@@ -261,12 +261,7 @@ private fun TopNavigation(
 
 @Composable
 private fun Brand() {
-    val c = palette
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        ClipprLogo(size = 32.dp)
-        Spacer(Modifier.width(10.dp))
-        Text("Clippr", style = MaterialTheme.typography.headlineSmall, color = c.textPrimary)
-    }
+    ClipprLockup(height = 26.dp)
 }
 
 @Composable

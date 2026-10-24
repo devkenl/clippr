@@ -60,37 +60,6 @@ import app.clippr.core.ui.theme.Radii
 import app.clippr.core.ui.theme.Spacing
 import app.clippr.core.ui.theme.palette
 
-/** The Clippr mark: a play shape cut by a diagonal edit line. */
-@Composable
-fun ClipprLogo(modifier: Modifier = Modifier, size: Dp = 28.dp) {
-    val accent = palette.accent
-    val cutColor = palette.background
-    Canvas(modifier.size(size)) {
-        val w = this.size.width
-        val h = this.size.height
-        val tile = Path().apply {
-            addRoundRect(
-                androidx.compose.ui.geometry.RoundRect(0f, 0f, w, h, w * 0.28f, h * 0.28f),
-            )
-        }
-        drawPath(tile, color = accent.copy(alpha = 0.16f))
-        val tri = Path().apply {
-            moveTo(w * 0.36f, h * 0.24f)
-            lineTo(w * 0.78f, h * 0.5f)
-            lineTo(w * 0.36f, h * 0.76f)
-            close()
-        }
-        drawPath(tri, color = accent)
-        drawLine(
-            color = cutColor,
-            start = Offset(w * 0.30f, h * 0.70f),
-            end = Offset(w * 0.70f, h * 0.30f),
-            strokeWidth = w * 0.07f,
-            cap = StrokeCap.Round,
-        )
-    }
-}
-
 /** Square icon button used in toolbars. Keeps a 44dp minimum touch target. */
 @Composable
 fun ToolButton(
