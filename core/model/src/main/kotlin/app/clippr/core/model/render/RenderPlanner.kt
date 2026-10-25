@@ -17,22 +17,35 @@ import app.clippr.core.model.TrackKind
  *
  * Clips whose asset is missing from the project are rendered as gaps, so a broken reference can
  * never shift the timing of anything else.
+ *
+ * With `cutTransitions`, overlapping clips on the same track are shown as a plain cut where the
+ * incoming clip starts, so only one clip per track is decoded at a time. The live preview uses
+ * this on devices that can't decode two clips at once fast enough (e.g. two 4K 60 fps clips);
+ * exports always render the real transition.
  */
 object RenderPlanner {
 
-    fun plan(project: Project, canvasWidth: Int = project.settings.width, canvasHeight: Int = project.settings.height): RenderPlan {
+    fun plan(
+        project: Project,
+        canvasWidth: Int = project.settings.width,
+        canvasHeight: Int = project.settings.height,
+        cutTransitions: Boolean = false,
+    ): RenderPlan {
         val sequence = project.sequence
         val duration = sequence.durationUs
 
         val layers = ArrayList<VideoLayer>()
         val hiddenAudio = ArrayList<List<AudioSegment>>()
         for (track in sequence.videoTracks) {
-            val clips = track.clips.sortedBy { it.timelineStartUs }
-            if (clips.isEmpty()) continue
+            val sorted = track.clips.sortedBy { it.timelineStartUs }
+            if (sorted.isEmpty()) continue
+            val clips = if (cutTransitions) cutOverlaps(sorted) else sorted
             // Clips alternate between two lanes only where they overlap (transitions).
             val lanes = IntArray(clips.size)
-            for (i in 1 until clips.size) {
-                lanes[i] = if (clips[i].timelineStartUs < clips[i - 1].timelineEndUs) 1 - lanes[i - 1] else 0
+            if (!cutTransitions) {
+                for (i in 1 until clips.size) {
+                    lanes[i] = if (clips[i].timelineStartUs < clips[i - 1].timelineEndUs) 1 - lanes[i - 1] else 0
+                }
             }
             if (track.hidden) {
                 // Hidden layers aren't drawn, but their clips' sound still plays.
@@ -52,8 +65,8 @@ object RenderPlanner {
                     val asset = project.asset(clip.assetId)
                     val prev = clips.getOrNull(i - 1)
                     val next = clips.getOrNull(i + 1)
-                    val overlapIn = if (prev != null) (prev.timelineEndUs - clip.timelineStartUs).coerceAtLeast(0) else 0L
-                    val overlapOut = if (next != null) (clip.timelineEndUs - next.timelineStartUs).coerceAtLeast(0) else 0L
+                    val overlapIn = if (prev != null && !cutTransitions) (prev.timelineEndUs - clip.timelineStartUs).coerceAtLeast(0) else 0L
+                    val overlapOut = if (next != null && !cutTransitions) (clip.timelineEndUs - next.timelineStartUs).coerceAtLeast(0) else 0L
                     segments += if (asset == null) {
                         VideoSegment.Gap(clip.durationUs)
                     } else {
@@ -126,6 +139,17 @@ object RenderPlanner {
             audioLanes = if (duration > 0) audioLanes else emptyList(),
             texts = texts,
         )
+    }
+
+    /** Trims each clip that runs into the next one so it ends where the next one starts. */
+    private fun cutOverlaps(clips: List<Clip>): List<Clip> = clips.mapIndexed { i, clip ->
+        val next = clips.getOrNull(i + 1)
+        if (next == null || next.timelineStartUs >= clip.timelineEndUs || next.timelineStartUs <= clip.timelineStartUs) {
+            clip
+        } else {
+            val keepSource = Clip.sourceDurationFor(next.timelineStartUs - clip.timelineStartUs, clip.speed)
+            clip.copy(sourceEndUs = (clip.sourceStartUs + keepSource).coerceIn(clip.sourceStartUs + 1, clip.sourceEndUs))
+        }
     }
 
     /** One audio lane from non-overlapping [clips], or null if none of them makes a sound. */

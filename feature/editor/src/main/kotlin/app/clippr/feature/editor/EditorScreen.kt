@@ -203,7 +203,15 @@ fun EditorScreen(
                         ui.importStatus?.let { ImportStatusChip(it) }
                     }
                     preview.error?.let { message ->
-                        PreviewErrorCard(message, onRetry = viewModel.preview::retry, onDismiss = viewModel.preview::clearError)
+                        PreviewErrorCard(
+                            message,
+                            onRetry = viewModel.preview::retry,
+                            onDismiss = viewModel.preview::clearError,
+                            onRestart = if (preview.suggestRestart) viewModel::restartApp else null,
+                        )
+                    }
+                    if (preview.transitionsSimplified && preview.error == null && !fullscreen) {
+                        PreviewNoticeChip("Transitions preview as cuts on this device. Your export includes them.")
                     }
                 }
                 if (ui.voiceover.visible) {

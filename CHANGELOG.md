@@ -6,6 +6,23 @@ versioning.
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-10-25
+
+### Fixed
+- After a 4K 60 fps transition froze the preview, every project (even a new 1080p one with a
+  single clip) failed with "the device's video decoder is busy". Cause: two 4K 60 fps clips
+  crossing need about twice the decoding power of one, more than many tablets have; the frozen
+  player couldn't shut down in time and kept the hardware decoders until the app process ended.
+  - The preview now checks what the device's decoders can handle. Transitions it can't play in
+    real time are previewed as a cut where the next clip starts, with a note above the preview;
+    exports still render the full transition.
+  - Edits no longer rebuild the layered preview player each time (that churned through
+    decoders); a new player is only made when the number of layers changes.
+  - A stalled layered preview pauses with an explanation instead of being rebuilt in a loop.
+  - On a decoder error the preview frees the timeline's thumbnail extractors and retries once.
+    If the decoders are still taken, the error card offers **Restart Clippr**, which saves,
+    restarts the app and reopens the project.
+
 ## [0.3.1] — 2026-10-25
 
 ### Fixed

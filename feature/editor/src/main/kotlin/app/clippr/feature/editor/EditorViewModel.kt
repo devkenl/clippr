@@ -152,6 +152,8 @@ class EditorViewModel(
     val resources: RenderResources get() = deps.resources
 
     init {
+        // After a decoder error the preview retries once; free the thumbnail extractors first.
+        preview.onReleaseOtherDecoders = { deps.thumbnails.releaseDecoders() }
         viewModelScope.launch { load() }
         viewModelScope.launch {
             deps.resources.fonts.version.collect { _state.update { it.copy(fonts = deps.resources.fonts.fonts()) } }
@@ -811,6 +813,22 @@ class EditorViewModel(
         saveJob?.cancel()
         val project = history?.current ?: return
         deps.appScope.launch { persist(project) }
+    }
+
+    /**
+     * Saves, then restarts the app process. Hardware video decoders that a frozen preview player
+     * never gave back are only freed when the process ends; the editor reopens on this project.
+     */
+    fun restartApp() {
+        commitLive()
+        saveJob?.cancel()
+        preview.release()
+        val project = history?.current
+        deps.appScope.launch {
+            if (project != null) persist(project)
+            deps.thumbnails.releaseDecoders()
+            AppRestart.restart(deps.context, projectId)
+        }
     }
 
     private suspend fun save() {

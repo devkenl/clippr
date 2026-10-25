@@ -42,6 +42,16 @@ data class PreviewState(
     val isEmpty: Boolean = true,
     /** Why the preview can't play, in plain words; null when all is well. */
     val error: String? = null,
+    /**
+     * The error is one only a fresh app process fixes (the device's video decoders stay taken
+     * after a frozen player), so the UI offers to restart Clippr.
+     */
+    val suggestRestart: Boolean = false,
+    /**
+     * The preview shows transitions as cuts because this device can't decode both clips of a
+     * transition at once in real time. Exports are unaffected.
+     */
+    val transitionsSimplified: Boolean = false,
 )
 
 /**
@@ -76,6 +86,15 @@ class PreviewEngine(context: Context) {
     private var stallRebuilds = 0
     /** Silent restarts after a GL error since the player was last ready. */
     private var autoRecoveries = 0
+    /** Decoder errors in a row (reset once playback is ready). */
+    private var decoderFailures = 0
+    private val budget = DecoderBudget(appContext)
+
+    /**
+     * Called before retrying after a decoder error, to free other users of the hardware video
+     * decoders (e.g. the timeline's thumbnail extractors).
+     */
+    var onReleaseOtherDecoders: (suspend () -> Unit)? = null
 
     private val _state = MutableStateFlow(PreviewState())
     val state: StateFlow<PreviewState> = _state.asStateFlow()
@@ -97,7 +116,10 @@ class PreviewEngine(context: Context) {
                     isBuffering = playbackState == Player.STATE_BUFFERING,
                 )
             }
-            if (playbackState == Player.STATE_READY) autoRecoveries = 0
+            if (playbackState == Player.STATE_READY) {
+                autoRecoveries = 0
+                decoderFailures = 0
+            }
             if (playbackState == Player.STATE_ENDED) {
                 player?.pause()
                 syncPosition()
@@ -114,17 +136,42 @@ class PreviewEngine(context: Context) {
                 scope.launch { retry() }
                 return
             }
-            _state.update { it.copy(error = describe(error), isPlaying = false, playRequested = false, isBuffering = false) }
+            val decoderError = error.errorCode in DECODER_CODES
+            if (decoderError) {
+                decoderFailures++
+                if (decoderFailures == 1) {
+                    // Decoders may just be briefly taken (thumbnails, a player still shutting
+                    // down). Free what we can and try once more before telling the user.
+                    scope.launch {
+                        releasePlayerOnly()
+                        runCatching { onReleaseOtherDecoders?.invoke() }
+                        delay(DECODER_RETRY_DELAY_MS)
+                        retry()
+                    }
+                    return
+                }
+            }
+            _state.update {
+                it.copy(
+                    error = describe(error),
+                    suggestRestart = decoderError,
+                    isPlaying = false,
+                    playRequested = false,
+                    isBuffering = false,
+                )
+            }
         }
     }
 
-    /** Whether the current player composites several layers (built with a multi-input graph). */
-    private var playerIsMultiLayer = false
+    /** How many layers the current player was built for. */
+    private var playerLayers = 0
 
-    private fun obtainPlayer(multiLayer: Boolean): CompositionPlayer {
+    private fun obtainPlayer(layers: Int): CompositionPlayer {
+        val multiLayer = layers > 1
         player?.let { existing ->
-            if (playerIsMultiLayer == multiLayer) return existing
-            // Switching between one and several layers needs a different video graph.
+            if (playerLayers == layers) return existing
+            // A different number of layers needs a different video graph (or a graph with a
+            // different number of inputs), which Media3 can't swap on a running player.
             releasePlayerOnly()
         }
         val builder = CompositionPlayer.Builder(appContext)
@@ -134,7 +181,7 @@ class PreviewEngine(context: Context) {
             it.volume = if (muted) 0f else 1f
             surfaceView?.let(it::setVideoSurfaceView)
             player = it
-            playerIsMultiLayer = multiLayer
+            playerLayers = layers
         }
     }
 
@@ -167,7 +214,13 @@ class PreviewEngine(context: Context) {
         lastProject = project
         lastQuality = quality
         val (w, h) = OutputSize.forPreview(project.settings, quality)
-        val plan = RenderPlanner.plan(project, w, h)
+        val full = RenderPlanner.plan(project, w, h)
+        // Two 4K 60 fps clips crossing each other can need more decoding power than the device
+        // has; a preview that can't keep up freezes and may hold on to the decoders. Show such
+        // transitions as cuts instead (the export still renders them).
+        val simplify = full.isMultiLayer && !budget.canPreview(full)
+        val plan = if (simplify) RenderPlanner.plan(project, w, h, cutTransitions = true) else full
+        _state.update { it.copy(transitionsSimplified = simplify) }
         val key = Triple(plan, w, h)
         if (key == lastKey && !failed) return
         lastKey = key
@@ -186,19 +239,16 @@ class PreviewEngine(context: Context) {
             failed = false
         }
         val wasPlaying = player?.playWhenReady == true
-        if (plan.isMultiLayer && player != null) {
-            // Media3's multi-layer preview doesn't reliably accept a new composition on a running
-            // player (it can fail to reconnect its output surface), so layered projects get a
-            // fresh player, and surface, for every change. Single-layer projects reuse theirs.
-            releasePlayerOnly()
-        }
-        val p = obtainPlayer(plan.isMultiLayer)
+        // The player is reused for edits; only a change in the number of layers needs a new one
+        // (see obtainPlayer). Rebuilding on every edit churned through hardware decoders, and a
+        // player that is slow to shut down can keep its decoders for good.
+        val p = obtainPlayer(plan.layers.size)
         val resumeAtUs = _state.value.positionUs.coerceIn(0, (plan.durationUs - 1).coerceAtLeast(0))
         try {
             p.setComposition(composition, resumeAtUs / 1000)
             if (p.playbackState == Player.STATE_IDLE) p.prepare()
             if (wasPlaying) p.play()
-            _state.update { it.copy(durationUs = plan.durationUs, isEmpty = false, positionUs = resumeAtUs, error = null) }
+            _state.update { it.copy(durationUs = plan.durationUs, isEmpty = false, positionUs = resumeAtUs, error = null, suggestRestart = false) }
         } catch (e: RuntimeException) {
             failed = true
             _state.update { it.copy(error = "Couldn't build the preview: ${e.message ?: e.javaClass.simpleName}", isEmpty = false) }
@@ -258,11 +308,11 @@ class PreviewEngine(context: Context) {
         releasePlayerOnly()
         failed = false
         lastKey = null
-        _state.update { it.copy(error = null) }
+        _state.update { it.copy(error = null, suggestRestart = false) }
         setProject(project, lastQuality)
     }
 
-    fun clearError() = _state.update { it.copy(error = null) }
+    fun clearError() = _state.update { it.copy(error = null, suggestRestart = false) }
 
     /** Releases decoders and GL resources. The engine can be used again afterwards. */
     fun release() {
@@ -348,10 +398,13 @@ class PreviewEngine(context: Context) {
             if (nudges <= 1) {
                 p.seekTo(position)
                 p.play()
-            } else if (stallRebuilds >= MAX_STALL_REBUILDS) {
+            } else if (stallRebuilds >= MAX_STALL_REBUILDS || playerLayers > 1) {
+                // Layered previews aren't rebuilt automatically: if several clips are too much
+                // to decode, a new player would stall the same way, and every forced rebuild
+                // risks leaving decoders behind.
                 p.pause()
                 _state.update {
-                    it.copy(error = "Playback keeps stalling at this point. A clip may be too heavy for live preview; try Fast preview quality, or check that its file is stored on the device.")
+                    it.copy(error = "Playback can't keep up at this point. Several high-resolution clips may be playing at once, or a file is still being downloaded by a cloud app. Your export isn't affected.")
                 }
                 return
             } else {
@@ -387,7 +440,7 @@ class PreviewEngine(context: Context) {
             PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
             PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
             PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
-            -> "The device's video decoder is busy or doesn't support this file. Try a lower preview quality."
+            -> "The device's video decoders are still taken, probably by an earlier preview that froze. Restart Clippr to free them; your project is saved."
             PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED,
             -> "The preview's graphics pipeline failed. Tap Try again; if it keeps happening, lower the preview quality."
             PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
@@ -403,6 +456,12 @@ class PreviewEngine(context: Context) {
         const val WATCHDOG_INTERVAL_MS = 400L
         const val STALL_MS = 2_500L
         const val MAX_STALL_REBUILDS = 2
+        const val DECODER_RETRY_DELAY_MS = 600L
+        val DECODER_CODES = setOf(
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+            PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
+        )
         val KNOWN_CODES = setOf(
             PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND,
             PlaybackException.ERROR_CODE_IO_NO_PERMISSION,

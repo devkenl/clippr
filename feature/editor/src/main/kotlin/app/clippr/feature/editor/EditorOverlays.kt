@@ -180,7 +180,13 @@ internal fun CloudMediaBanner(count: Int, busy: Boolean, status: String?, onCopy
 
 /** Shown over the preview when playback failed, with the reason and a way to try again. */
 @Composable
-internal fun PreviewErrorCard(message: String, onRetry: () -> Unit, onDismiss: () -> Unit, modifier: Modifier = Modifier) {
+internal fun PreviewErrorCard(
+    message: String,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    onRestart: (() -> Unit)? = null,
+) {
     val c = palette
     Column(
         modifier
@@ -199,8 +205,30 @@ internal fun PreviewErrorCard(message: String, onRetry: () -> Unit, onDismiss: (
         Spacer(Modifier.height(Spacing.sm))
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.sm), modifier = Modifier.align(Alignment.End)) {
             SecondaryButton("Dismiss", onDismiss)
-            PrimaryButton("Try again", onRetry, icon = ClipprIcons.Retry)
+            if (onRestart != null) {
+                SecondaryButton("Try again", onRetry)
+                PrimaryButton("Restart Clippr", onRestart, icon = ClipprIcons.Retry)
+            } else {
+                PrimaryButton("Try again", onRetry, icon = ClipprIcons.Retry)
+            }
         }
+    }
+}
+
+/** A quiet note over the preview, e.g. that transitions preview as cuts on this device. */
+@Composable
+internal fun PreviewNoticeChip(text: String, modifier: Modifier = Modifier) {
+    val c = palette
+    Row(
+        modifier
+            .clip(RoundedCornerShape(50))
+            .background(c.panel.copy(alpha = 0.92f))
+            .padding(horizontal = Spacing.md, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(ClipprIcons.Info, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(Spacing.sm))
+        Text(text, style = MaterialTheme.typography.labelMedium, color = c.textPrimary, maxLines = 2)
     }
 }
 

@@ -62,6 +62,22 @@ class TransitionsTest {
     }
 
     @Test
+    fun cutModeShowsTransitionsAsCutsWithoutChangingTiming() {
+        val p = MoveClip("b", V1, 9 * SEC).apply(threeClips())
+        val plan = RenderPlanner.plan(p, cutTransitions = true)
+        assertEquals(1, plan.layers.size, "only one clip is decoded at a time")
+        val segments = plan.layers.single().segments
+        assertTrue(abs(p.durationUs - segments.sumOf { it.durationUs }) <= 1, "the preview stays as long as the project")
+        val media = segments.filterIsInstance<VideoSegment.Media>()
+        assertEquals(listOf("a", "b", "c"), media.map { it.clipId })
+        assertEquals(9 * SEC, media[0].durationUs, "a is cut where b starts")
+        assertEquals(9 * SEC, media[1].timelineStartUs)
+        assertTrue(media.all { it.transitionIn == null && it.transitionOut == null })
+        // The project itself still has the transition.
+        assertEquals(SEC, Overlaps.overlapIn(p.track(V1).clips, 1))
+    }
+
+    @Test
     fun overlapsLongerThanHalfAClipSnapInstead() {
         // b is 6 s long: more than 3 s of overlap is not a transition.
         val p = MoveClip("b", V1, 6 * SEC).apply(threeClips())

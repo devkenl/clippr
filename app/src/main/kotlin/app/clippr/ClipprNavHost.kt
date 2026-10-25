@@ -58,10 +58,12 @@ class ScreenStores : ViewModel() {
  * entry its own ViewModel scope and saved UI state.
  */
 @Composable
-fun ClipprNavHost(container: AppContainer) {
+fun ClipprNavHost(container: AppContainer, openProjectId: String? = null) {
     val backStack: SnapshotStateList<String> = rememberSaveable(
         saver = listSaver(save = { it.toList() }, restore = { it.toMutableStateList() }),
-    ) { mutableStateListOf(Routes.HOME) }
+    ) {
+        if (openProjectId != null) mutableStateListOf(Routes.HOME, Routes.editor(openProjectId)) else mutableStateListOf(Routes.HOME)
+    }
     val screenStores: ScreenStores = viewModel()
     val saveableState = rememberSaveableStateHolder()
 
