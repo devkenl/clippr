@@ -6,6 +6,21 @@ versioning.
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-10-25
+
+### Fixed
+- Photos could not be imported at all: the size check treated every image as unreadable (a
+  bounds-only decode always returns no bitmap). Images whose size BitmapFactory can't read are
+  now measured with ImageDecoder.
+- Previewing a project with transitions or layers stopped with "Error creating new EGL surface"
+  (video frame processing failed). The preview now gives every new player a fresh surface,
+  rebuilds the layered player for each change instead of reusing it, and recovers once by itself
+  if the graphics pipeline fails.
+
+### Added
+- Snapping in the preview: twisting snaps to straight and 90° angles, pinching snaps to 100 %,
+  and dragging snaps to the centre lines, with a light haptic tick and guide lines.
+
 ## [0.3.0] — 2026-10-25
 
 ### Added

@@ -74,6 +74,8 @@ class PreviewEngine(context: Context) {
     private var muted = false
     /** Automatic rebuilds since playback last made progress; stops endless retry loops. */
     private var stallRebuilds = 0
+    /** Silent restarts after a GL error since the player was last ready. */
+    private var autoRecoveries = 0
 
     private val _state = MutableStateFlow(PreviewState())
     val state: StateFlow<PreviewState> = _state.asStateFlow()
@@ -95,6 +97,7 @@ class PreviewEngine(context: Context) {
                     isBuffering = playbackState == Player.STATE_BUFFERING,
                 )
             }
+            if (playbackState == Player.STATE_READY) autoRecoveries = 0
             if (playbackState == Player.STATE_ENDED) {
                 player?.pause()
                 syncPosition()
@@ -104,6 +107,13 @@ class PreviewEngine(context: Context) {
         override fun onPlayerError(error: PlaybackException) {
             failed = true
             stopPlaybackMonitoring()
+            if (error.errorCode == PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED && autoRecoveries < 1) {
+                // GL pipeline hiccup (e.g. its surface couldn't be created): start over once with
+                // a fresh player and surface before bothering the user.
+                autoRecoveries++
+                scope.launch { retry() }
+                return
+            }
             _state.update { it.copy(error = describe(error), isPlaying = false, playRequested = false, isBuffering = false) }
         }
     }
@@ -128,13 +138,24 @@ class PreviewEngine(context: Context) {
         }
     }
 
+    private val _surfaceGeneration = MutableStateFlow(0)
+
+    /**
+     * Changes whenever the preview needs a brand-new SurfaceView. A window surface can only be
+     * connected to one GL producer at a time; handing the same surface from a released player
+     * to a new one can fail with EGL_BAD_ALLOC ("Error creating new EGL surface"). So every new
+     * player gets a fresh surface: the UI recreates its SurfaceView when this value changes.
+     */
+    val surfaceGeneration: StateFlow<Int> = _surfaceGeneration.asStateFlow()
+
     fun attachSurface(view: SurfaceView) {
         surfaceView = view
         player?.setVideoSurfaceView(view)
     }
 
     fun detachSurface(view: SurfaceView) {
-        if (surfaceView === view) surfaceView = null
+        if (surfaceView !== view) return
+        surfaceView = null
         player?.clearVideoSurfaceView(view)
     }
 
@@ -165,6 +186,12 @@ class PreviewEngine(context: Context) {
             failed = false
         }
         val wasPlaying = player?.playWhenReady == true
+        if (plan.isMultiLayer && player != null) {
+            // Media3's multi-layer preview doesn't reliably accept a new composition on a running
+            // player (it can fail to reconnect its output surface), so layered projects get a
+            // fresh player, and surface, for every change. Single-layer projects reuse theirs.
+            releasePlayerOnly()
+        }
         val p = obtainPlayer(plan.isMultiLayer)
         val resumeAtUs = _state.value.positionUs.coerceIn(0, (plan.durationUs - 1).coerceAtLeast(0))
         try {
@@ -251,11 +278,18 @@ class PreviewEngine(context: Context) {
 
     private fun releasePlayerOnly() {
         stopPlaybackMonitoring()
-        player?.let {
-            it.removeListener(listener)
-            it.release()
-        }
+        val p = player ?: return
+        p.removeListener(listener)
+        // Disconnect the output surface before releasing, so the GL pipeline lets go of it.
+        surfaceView?.let { view -> runCatching { p.clearVideoSurfaceView(view) } }
+        runCatching { p.stop() }
+        p.release()
         player = null
+        if (surfaceView != null) {
+            // The next player gets its own surface (see surfaceGeneration).
+            surfaceView = null
+            _surfaceGeneration.value++
+        }
     }
 
     // Playback monitoring --------------------------------------------------------------------
@@ -354,6 +388,8 @@ class PreviewEngine(context: Context) {
             PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
             PlaybackException.ERROR_CODE_DECODING_RESOURCES_RECLAIMED,
             -> "The device's video decoder is busy or doesn't support this file. Try a lower preview quality."
+            PlaybackException.ERROR_CODE_VIDEO_FRAME_PROCESSING_FAILED,
+            -> "The preview's graphics pipeline failed. Tap Try again; if it keeps happening, lower the preview quality."
             PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
             PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES,
             -> "This device can't decode one of the clips at this size."

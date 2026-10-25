@@ -17,7 +17,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import app.clippr.core.model.edit.TransformSnapping
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -104,15 +111,20 @@ fun PreviewMonitor(
                 .aspectRatio(aspect, matchHeightConstraintsFirst = containerAspect > aspect)
                 .semantics { contentDescription = "Preview monitor" },
         ) {
-            AndroidView(
-                factory = { ctx -> SurfaceView(ctx).also(engine::attachSurface) },
-                onRelease = { view -> engine.detachSurface(view) },
-                modifier = Modifier.fillMaxSize(),
-            )
+            // A new player gets a new SurfaceView (see PreviewEngine.surfaceGeneration).
+            val surfaceGeneration by engine.surfaceGeneration.collectAsState()
+            key(surfaceGeneration) {
+                AndroidView(
+                    factory = { ctx -> SurfaceView(ctx).also(engine::attachSurface) },
+                    onRelease = { view -> engine.detachSurface(view) },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
 
             val activeClip = selectedClip?.takeIf { it.contains(playheadUs) && isVisual(project, it) }
             val editable = activeClip != null && project.sequence.trackOfClip(activeClip.id)?.id !in lockedTrackIds
 
+            val snapGuides = remember { mutableStateOf<TransformSnapping.Result?>(null) }
             if (interactive) {
                 TransformLayer(
                     project = project,
@@ -123,11 +135,13 @@ fun PreviewMonitor(
                     onLiveTransform = onLiveTransform,
                     onCommit = onCommit,
                     onSelect = onSelect,
+                    snapGuides = snapGuides,
                 )
             }
 
             Canvas(Modifier.fillMaxSize()) {
                 drawGuides(guides, project, c.textPrimary)
+                snapGuides.value?.let { drawSnapGuides(it, c.snapLine) }
                 if (activeClip != null) {
                     frameFor(project, activeClip, playheadUs, size, fonts)?.let { drawSelection(it, c.accent, editable) }
                 }
@@ -183,7 +197,9 @@ private fun TransformLayer(
     onLiveTransform: (String, Transform) -> Unit,
     onCommit: () -> Unit,
     onSelect: (String?) -> Unit,
+    snapGuides: MutableState<TransformSnapping.Result?>,
 ) {
+    val haptics = LocalHapticFeedback.current
     val latest by rememberUpdatedState(TransformInputs(project, playheadUs, selectedClip, lockedTrackIds, fonts, onLiveTransform, onCommit, onSelect))
     var lastTap by remember { mutableLongStateOf(0L) }
     Box(
@@ -204,7 +220,10 @@ private fun TransformLayer(
                         hit != null -> hit
                         else -> null
                     }
+                    // The unsnapped value follows the fingers; what is shown is snapped (see
+                    // TransformSnapping), so pulling further always breaks out of a snap.
                     var transform = target?.let { Animation.transformAtTimeline(it, inputs.playheadUs) }
+                    var lastSnapped = false
                     var moved = false
                     var announced = false
                     while (true) {
@@ -232,11 +251,17 @@ private fun TransformLayer(
                             positionY = t.positionY - pan.y / (viewSize.height / 2f),
                             scale = t.scale * zoom,
                             rotationDegrees = t.rotationDegrees + rotation,
-                        ).sanitized()
+                        )
                         transform = next
-                        inputs.onLiveTransform(clip.id, next)
+                        val snapped = TransformSnapping.snap(next)
+                        // A light tick when something locks into place.
+                        if (snapped.any && !lastSnapped) haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        lastSnapped = snapped.any
+                        snapGuides.value = snapped
+                        inputs.onLiveTransform(clip.id, snapped.transform)
                         event.changes.forEach { if (it.positionChanged()) it.consume() }
                     }
+                    snapGuides.value = null
                     if (moved) {
                         inputs.onCommit()
                     } else {
@@ -305,6 +330,13 @@ private fun DrawScope.drawSelection(frame: ClipFrame, accent: Color, editable: B
             }
         }
     }
+}
+
+/** Centre lines while a clip is snapped to the centre while dragging. */
+private fun DrawScope.drawSnapGuides(snap: TransformSnapping.Result, color: Color) {
+    val stroke = 1.dp.toPx()
+    if (snap.centerX) drawLine(color, Offset(size.width / 2, 0f), Offset(size.width / 2, size.height), stroke)
+    if (snap.centerY) drawLine(color, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), stroke)
 }
 
 private fun DrawScope.drawGuides(mode: GuideMode, project: Project, color: Color) {

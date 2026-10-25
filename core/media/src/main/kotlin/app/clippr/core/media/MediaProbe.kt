@@ -52,8 +52,15 @@ class MediaProbe(private val context: Context) {
 
     private fun probeImage(uri: Uri, id: String, name: String, mime: String, size: Long): MediaAsset? {
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
-        if (opts.outWidth <= 0 || opts.outHeight <= 0) return null
+        // A bounds-only decode always returns null; success shows up in outWidth/outHeight.
+        val opened = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts); true } ?: false
+        if (!opened) return null
+        if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+            // Formats BitmapFactory can't measure (some HEIF variants): ask ImageDecoder.
+            val measured = imageDecoderSize(uri) ?: return null
+            opts.outWidth = measured.first
+            opts.outHeight = measured.second
+        }
         val rotation = try {
             resolver.openInputStream(uri)?.use { exifRotation(ExifInterface(it)) } ?: 0
         } catch (e: Exception) {
@@ -71,6 +78,21 @@ class MediaProbe(private val context: Context) {
             mimeType = mime,
             sizeBytes = size,
         )
+    }
+
+    /** Image size from ImageDecoder's header callback (decodes only a 1x1 thumbnail). */
+    private fun imageDecoderSize(uri: Uri): Pair<Int, Int>? {
+        var size: Pair<Int, Int>? = null
+        try {
+            val source = android.graphics.ImageDecoder.createSource(resolver, uri)
+            android.graphics.ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                size = info.size.width to info.size.height
+                decoder.setTargetSize(1, 1)
+            }
+        } catch (e: Exception) {
+            // Keep whatever the header told us.
+        }
+        return size
     }
 
     private fun probeTimed(uri: Uri, id: String, name: String, mime: String, size: Long): MediaAsset? {
